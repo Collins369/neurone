@@ -35,6 +35,7 @@ fn account_event(k: MarketKey, wv: u64, digest: u64, slot: u64) -> NormalizedEve
         write_version: wv,
         is_startup: false,
         txn_signature: None,
+        decoded: None,
     }))
 }
 
@@ -48,6 +49,9 @@ fn tx_event(k: MarketKey, sig_byte: u8, slot: u64) -> NormalizedEvent {
         is_vote: false,
         success: true,
         keys: vec![k],
+        swaps: Vec::new(),
+        creates: Vec::new(),
+        decode_rejected: 0,
     }))
 }
 

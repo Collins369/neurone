@@ -220,7 +220,12 @@ async fn handle_update(
     ) {
         metrics.observe_slot();
     }
-    match normalize(&update, arrival_ns) {
+    let decode_start = crate::clock::now_ns();
+    let normalized = normalize(&update, arrival_ns);
+    metrics.record_decode(
+        (crate::clock::now_ns().saturating_sub(decode_start)).min(u64::MAX as u128) as u64,
+    );
+    match normalized {
         Normalized::Event(event) => {
             metrics.incr_normalized();
             if let Err(e) = engine.route(event).await {
@@ -416,10 +421,27 @@ mod tests {
         let tx = req.transactions.get("txs").expect("tx filter");
         assert!(!tx.account_include.is_empty());
         assert_eq!(tx.vote, Some(false));
-        let acct = req.accounts.get("accounts").expect("account filter");
-        assert!(!acct.owner.is_empty());
+        // Default configuration does not subscribe accounts by owner (that
+        // would trigger a large startup snapshot).
+        assert!(req.accounts.is_empty());
         assert!(req.slots.contains_key("slots"));
         assert!(req.blocks_meta.contains_key("blocks_meta"));
+    }
+
+    #[test]
+    fn account_filter_is_emitted_when_configured() {
+        let c = IngestConfig {
+            filters: crate::config::FilterConfig {
+                account_programs: vec!["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".into()],
+                account_addresses: vec!["11134iSgWxi8QLbVgrAe48yzbzcgBrd7ZDJjmSC67Wv".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let req = build_subscribe_request(&c, None).unwrap();
+        let acct = req.accounts.get("accounts").expect("account filter");
+        assert!(!acct.owner.is_empty());
+        assert!(!acct.account.is_empty());
     }
 
     #[test]

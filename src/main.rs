@@ -64,6 +64,15 @@ fn run() -> anyhow::Result<()> {
             );
             let (_bounds, counts) = report.latency_buckets;
             println!("e2e latency histogram counts={counts:?}");
+            let n: u64 = std::env::var("NEURONE_DECODE_ITERS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(200_000);
+            let d = neurone::bench::decode_microbench(n);
+            println!(
+                "decode bench: decodes={} elapsed={:.3}s decodes_per_second={:.0} ns_per_decode={:.0}",
+                d.decodes, d.elapsed.as_secs_f64(), d.decodes_per_second, d.ns_per_decode
+            );
             Ok::<(), anyhow::Error>(())
         }),
         "check" => {

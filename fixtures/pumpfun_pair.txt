@@ -1,0 +1,2 @@
+mint=DdtKUh7bJKU7Dom2SMp1uHicr32o2VRR9hosjwRypump
+bonding_curve=112heubZsHqSNJpc3QHTz6FjQDTLQpXiSDGyjALEZGr

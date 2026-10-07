@@ -81,11 +81,31 @@ impl SimulatedSource {
                 write_version: wv,
                 is_startup: false,
                 txn_signature: None,
+                decoded: None,
             }))
         } else {
             // Transaction touching this market (plus a couple of neighbours).
             let sig = synthetic_signature(self.step);
             let mut keys = vec![key, self.markets[(idx + 1) % self.markets.len()]];
+            let is_buy = self.next_rand().is_multiple_of(2);
+            let quote = 1_000 + (self.step % 50_000);
+            let base = 1_000_000 + (self.step % 1_000_000);
+            let swap = crate::decode::DecodedSwap {
+                venue: crate::decode::Venue::PumpFun,
+                market_key: key,
+                base_mint: Some(key),
+                quote_mint: None,
+                is_buy,
+                base_amount: base,
+                quote_amount: quote,
+                base_reserve: Some(800_000_000 + self.step),
+                quote_reserve: Some(5_000_000_000 + self.step),
+                virtual_quote_reserve: Some(30_000_000_000),
+                fee_quote: quote / 100,
+                fee_bps: Some(95),
+                timestamp: None,
+                ix_name: None,
+            };
             keys.sort_unstable();
             keys.dedup();
             NormalizedEvent::new(EventKind::Transaction(TransactionUpdate {
@@ -95,6 +115,9 @@ impl SimulatedSource {
                 is_vote: false,
                 success: true,
                 keys,
+                swaps: vec![swap],
+                creates: Vec::new(),
+                decode_rejected: 0,
             }))
         }
     }

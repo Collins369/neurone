@@ -175,10 +175,17 @@ impl Default for FilterConfig {
         Self {
             slot_updates: true,
             block_meta: true,
-            // pump.fun program id, taken verbatim from Solami's official
-            // gRPC SDK example (https://solami.dev/docs/sdk).
-            transaction_programs: vec!["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".to_string()],
-            account_programs: vec!["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".to_string()],
+            // Both venues are decoded in M2: the pump.fun bonding curve and the
+            // pump.swap AMM. Program ids come from the official pump.fun IDLs.
+            transaction_programs: vec![
+                "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".to_string(),
+                "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".to_string(),
+            ],
+            // Owner-scoped account subscriptions trigger a large startup
+            // snapshot on Yellowstone, so they are opt-in. Markets are created
+            // from decoded swap/create events by default; pin explicit account
+            // addresses instead when you want account-driven state.
+            account_programs: Vec::new(),
             account_addresses: Vec::new(),
         }
     }
@@ -239,7 +246,9 @@ impl Config {
         if let Ok(v) = std::env::var("NEURONE_SOURCE") {
             self.ingest.source = parse_source(&v)?;
         }
-        if let Ok(v) = std::env::var("SOLAMI_GRPC_ENDPOINT") {
+        if let Ok(v) = std::env::var("SOLAMI_GRPC_ENDPOINT")
+            .or_else(|_| std::env::var("SOLAMI_YELLOWSTONE_ENDPOINT"))
+        {
             if !v.trim().is_empty() {
                 self.ingest.endpoint = v;
             }

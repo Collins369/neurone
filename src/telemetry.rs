@@ -83,6 +83,12 @@ pub struct Metrics {
     pub(crate) yellowstone_connected: AtomicU64,
     pub(crate) events_received: AtomicU64,
     pub(crate) events_normalized: AtomicU64,
+    pub(crate) events_decoded: AtomicU64,
+    pub(crate) decode_rejected: AtomicU64,
+    pub(crate) volume_updates: AtomicU64,
+    pub(crate) stale_events: AtomicU64,
+    pub(crate) swaps_pumpfun: AtomicU64,
+    pub(crate) swaps_pumpswap: AtomicU64,
     pub(crate) invalid_events: AtomicU64,
     pub(crate) state_updates: AtomicU64,
     pub(crate) slots_observed: AtomicU64,
@@ -94,6 +100,7 @@ pub struct Metrics {
     shard_activity: Vec<AtomicU64>,
     end_to_end: Histogram,
     processing: Histogram,
+    decode: Histogram,
 }
 
 /// Immutable point-in-time view of [`Metrics`].
@@ -102,6 +109,12 @@ pub struct MetricsSnapshot {
     pub yellowstone_connected: bool,
     pub events_received: u64,
     pub events_normalized: u64,
+    pub events_decoded: u64,
+    pub decode_rejected: u64,
+    pub volume_updates: u64,
+    pub stale_events: u64,
+    pub swaps_pumpfun: u64,
+    pub swaps_pumpswap: u64,
     pub invalid_events: u64,
     pub state_updates: u64,
     pub slots_observed: u64,
@@ -123,6 +136,12 @@ pub struct MetricsSnapshot {
     pub processing_p95_ns: u64,
     pub processing_p99_ns: u64,
     pub processing_max_ns: u64,
+    /// Normalize + protocol decode time at the ingestion boundary.
+    pub decode_samples: u64,
+    pub decode_p50_ns: u64,
+    pub decode_p95_ns: u64,
+    pub decode_p99_ns: u64,
+    pub decode_max_ns: u64,
 }
 
 impl Metrics {
@@ -137,6 +156,12 @@ impl Metrics {
             yellowstone_connected: AtomicU64::new(0),
             events_received: AtomicU64::new(0),
             events_normalized: AtomicU64::new(0),
+            events_decoded: AtomicU64::new(0),
+            decode_rejected: AtomicU64::new(0),
+            volume_updates: AtomicU64::new(0),
+            stale_events: AtomicU64::new(0),
+            swaps_pumpfun: AtomicU64::new(0),
+            swaps_pumpswap: AtomicU64::new(0),
             invalid_events: AtomicU64::new(0),
             state_updates: AtomicU64::new(0),
             slots_observed: AtomicU64::new(0),
@@ -147,7 +172,8 @@ impl Metrics {
             worker_threads_mask: AtomicU64::new(0),
             shard_activity,
             end_to_end: Histogram::new(latency_bounds.clone()),
-            processing: Histogram::new(latency_bounds),
+            processing: Histogram::new(latency_bounds.clone()),
+            decode: Histogram::new(latency_bounds),
         })
     }
 
@@ -162,6 +188,35 @@ impl Metrics {
 
     pub fn incr_normalized(&self) {
         self.events_normalized.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn incr_decoded(&self) {
+        self.events_decoded.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn add_decode_rejected(&self, n: u32) {
+        self.decode_rejected
+            .fetch_add(u64::from(n), Ordering::Relaxed);
+    }
+
+    pub fn incr_volume_update(&self) {
+        self.volume_updates.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn incr_swap(&self, venue: crate::decode::Venue) {
+        match venue {
+            crate::decode::Venue::PumpFun => self.swaps_pumpfun.fetch_add(1, Ordering::Relaxed),
+            crate::decode::Venue::PumpSwap => self.swaps_pumpswap.fetch_add(1, Ordering::Relaxed),
+        };
+    }
+
+    pub fn incr_stale(&self) {
+        self.stale_events.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record the normalize+decode time for one update.
+    pub fn record_decode(&self, ns: u64) {
+        self.decode.record(ns);
     }
 
     pub fn incr_invalid(&self) {
@@ -224,6 +279,12 @@ impl Metrics {
             yellowstone_connected: self.yellowstone_connected.load(Ordering::Relaxed) != 0,
             events_received: self.events_received.load(Ordering::Relaxed),
             events_normalized: self.events_normalized.load(Ordering::Relaxed),
+            events_decoded: self.events_decoded.load(Ordering::Relaxed),
+            decode_rejected: self.decode_rejected.load(Ordering::Relaxed),
+            volume_updates: self.volume_updates.load(Ordering::Relaxed),
+            stale_events: self.stale_events.load(Ordering::Relaxed),
+            swaps_pumpfun: self.swaps_pumpfun.load(Ordering::Relaxed),
+            swaps_pumpswap: self.swaps_pumpswap.load(Ordering::Relaxed),
             invalid_events: self.invalid_events.load(Ordering::Relaxed),
             state_updates: self.state_updates.load(Ordering::Relaxed),
             slots_observed: self.slots_observed.load(Ordering::Relaxed),
@@ -243,6 +304,11 @@ impl Metrics {
             processing_p95_ns: self.processing.quantile(0.95),
             processing_p99_ns: self.processing.quantile(0.99),
             processing_max_ns: self.processing.quantile(1.0),
+            decode_samples: self.decode.samples(),
+            decode_p50_ns: self.decode.quantile(0.50),
+            decode_p95_ns: self.decode.quantile(0.95),
+            decode_p99_ns: self.decode.quantile(0.99),
+            decode_max_ns: self.decode.quantile(1.0),
         }
     }
 
@@ -269,6 +335,12 @@ pub async fn report_loop(metrics: Arc<Metrics>, interval: Duration, shutdown: Sh
                 tracing::info!(
                     yellowstone_connected = now.yellowstone_connected,
                     events_received = now.events_received,
+                    events_decoded = now.events_decoded,
+                    decode_rejected = now.decode_rejected,
+                    volume_updates = now.volume_updates,
+                    swaps_pumpfun = now.swaps_pumpfun,
+                    swaps_pumpswap = now.swaps_pumpswap,
+                    stale_events = now.stale_events,
                     events_per_second = (delta_events as f64 / secs).round() as u64,
                     state_updates = now.state_updates,
                     state_updates_per_second = (delta_updates as f64 / secs).round() as u64,
@@ -283,6 +355,8 @@ pub async fn report_loop(metrics: Arc<Metrics>, interval: Duration, shutdown: Sh
                     e2e_p99_us = now.latency_p99_ns as f64 / 1_000.0,
                     proc_p50_us = now.processing_p50_ns as f64 / 1_000.0,
                     proc_p99_us = now.processing_p99_ns as f64 / 1_000.0,
+                    decode_p50_us = now.decode_p50_ns as f64 / 1_000.0,
+                    decode_p99_us = now.decode_p99_ns as f64 / 1_000.0,
                     shard_activity = ?now.shard_activity,
                     "runtime telemetry",
                 );

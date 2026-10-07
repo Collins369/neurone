@@ -1,51 +1,231 @@
-//! Incremental per-market state.
+//! Incremental protocol-derived market state.
 //!
-//! State is *continuous*: Neurone never rebuilds a market from scratch for
-//! each event. Each event mutates the state it already owns.
+//! State is *continuous*: Neurone never rebuilds a market from scratch for each
+//! event. Each event mutates the state it already owns.
 //!
-//! Only fields that Milestone 1 can genuinely derive from the stream are
-//! modelled. Price/liquidity/volume require AMM instruction decoding and
-//! belong to a later milestone; inventing them here would be dishonest.
+//! ## Units
+//!
+//! Everything stored here is in **raw on-chain integer units**:
+//! * `base_reserve` / `virtual_base_reserve` — raw base-token units;
+//! * `quote_reserve` / `virtual_quote_reserve` — raw quote units (lamports when
+//!   the quote mint is wrapped SOL);
+//! * volume fields — raw quote/base units.
+//!
+//! No UI decimals or USD conversion is applied, because decimals live on the
+//! mint accounts, which this milestone does not read. Prices are therefore
+//! exact integer ratios, never floating point, so state stays deterministic.
 
+use std::collections::VecDeque;
+
+use crate::decode::{CreatedMarket, DecodedAccount, DecodedSwap, Venue};
 use crate::events::{AccountUpdate, MarketKey, TransactionUpdate};
 
-/// Lifecycle status. Milestone 1 only observes; later milestones add
-/// qualified/armed/position states.
+/// Default number of sparse per-slot volume buckets retained per market.
+pub const DEFAULT_VOLUME_BUCKETS: usize = 1024;
+
+/// Lifecycle status. M2 only observes; later milestones add qualified/armed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarketStatus {
     Observing,
 }
 
-/// State machine for a single market (one tracked account pubkey).
+/// An exact rational price: `num / den` raw quote units per raw base unit.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Ratio {
+    pub num: u128,
+    pub den: u128,
+}
+
+impl Ratio {
+    pub fn new(num: u128, den: u128) -> Option<Self> {
+        (den != 0).then_some(Ratio { num, den })
+    }
+
+    /// Convenience conversion for telemetry only; never used for state.
+    pub fn as_f64(self) -> f64 {
+        self.num as f64 / self.den as f64
+    }
+
+    /// Scale by `10^base_decimals / 10^quote_decimals` to express the price in
+    /// UI units. Kept separate so unit mistakes are explicit.
+    pub fn scaled(self, base_decimals: u32, quote_decimals: u32) -> Option<Ratio> {
+        let base_scale = 10u128.checked_pow(base_decimals)?;
+        let quote_scale = 10u128.checked_pow(quote_decimals)?;
+        Ratio::new(
+            self.num.checked_mul(base_scale)?,
+            self.den.checked_mul(quote_scale)?,
+        )
+    }
+}
+
+/// Per-slot volume aggregate.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct SlotVolume {
+    pub slot: u64,
+    pub buy_quote: u64,
+    pub sell_quote: u64,
+    pub buy_base: u64,
+    pub sell_base: u64,
+    pub trades: u32,
+}
+
+/// Summed volume over a slot range.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct VolumeTotals {
+    pub buy_quote: u64,
+    pub sell_quote: u64,
+    pub buy_base: u64,
+    pub sell_base: u64,
+    pub trades: u64,
+}
+
+impl VolumeTotals {
+    pub fn total_quote(&self) -> u64 {
+        self.buy_quote.saturating_add(self.sell_quote)
+    }
+}
+
+/// Bounded, sparse, per-slot volume window.
+///
+/// Only slots that actually traded get a bucket, so an idle market costs
+/// nothing. Oldest buckets are evicted once `capacity` is reached, which keeps
+/// per-market memory bounded no matter how long the process runs.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct VolumeWindow {
+    capacity: usize,
+    buckets: VecDeque<SlotVolume>,
+}
+
+impl VolumeWindow {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            buckets: VecDeque::new(),
+        }
+    }
+
+    /// Record a trade. Slots are expected non-decreasing per market.
+    pub fn record(&mut self, slot: u64, is_buy: bool, quote: u64, base: u64) {
+        let bucket = match self.buckets.back_mut() {
+            Some(b) if b.slot == slot => b,
+            _ => {
+                // Out-of-order (rare): reuse an existing bucket if present.
+                if let Some(idx) = self.buckets.iter().rposition(|b| b.slot == slot) {
+                    &mut self.buckets[idx]
+                } else {
+                    self.buckets.push_back(SlotVolume {
+                        slot,
+                        ..Default::default()
+                    });
+                    self.buckets.back_mut().expect("just pushed")
+                }
+            }
+        };
+        if is_buy {
+            bucket.buy_quote = bucket.buy_quote.saturating_add(quote);
+            bucket.buy_base = bucket.buy_base.saturating_add(base);
+        } else {
+            bucket.sell_quote = bucket.sell_quote.saturating_add(quote);
+            bucket.sell_base = bucket.sell_base.saturating_add(base);
+        }
+        bucket.trades = bucket.trades.saturating_add(1);
+        while self.buckets.len() > self.capacity {
+            self.buckets.pop_front();
+        }
+    }
+
+    /// Total volume recorded in buckets with `slot >= from_slot`.
+    pub fn totals_since(&self, from_slot: u64) -> VolumeTotals {
+        let mut t = VolumeTotals::default();
+        for b in self.buckets.iter().rev() {
+            if b.slot < from_slot {
+                break;
+            }
+            t.buy_quote = t.buy_quote.saturating_add(b.buy_quote);
+            t.sell_quote = t.sell_quote.saturating_add(b.sell_quote);
+            t.buy_base = t.buy_base.saturating_add(b.buy_base);
+            t.sell_base = t.sell_base.saturating_add(b.sell_base);
+            t.trades += u64::from(b.trades);
+        }
+        t
+    }
+
+    /// Total volume across the retained window.
+    pub fn totals(&self) -> VolumeTotals {
+        self.totals_since(0)
+    }
+
+    pub fn len(&self) -> usize {
+        self.buckets.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buckets.is_empty()
+    }
+}
+
+/// State machine for a single market.
 #[derive(Clone, Debug)]
 pub struct MarketState {
     pub key: MarketKey,
-    /// Owning program of the tracked account, when known.
-    pub owner: Option<MarketKey>,
+    pub venue: Option<Venue>,
     pub status: MarketStatus,
+
+    // Identity.
+    pub base_mint: Option<MarketKey>,
+    pub quote_mint: Option<MarketKey>,
+    pub owner: Option<MarketKey>,
+    pub creator: Option<MarketKey>,
+    pub pool_base_token_account: Option<MarketKey>,
+    pub pool_quote_token_account: Option<MarketKey>,
+
+    // Chain position / account bookkeeping.
     pub last_slot: u64,
-    /// Lamports held by the tracked account at the last applied update.
     pub lamports: u64,
     pub data_len: u64,
-    /// FNV-1a digest of the account data — a deterministic state fingerprint.
     pub data_digest: u64,
     pub write_version: u64,
     pub account_updates: u64,
     pub tx_count: u64,
     pub last_tx_slot: u64,
     pub last_tx_signature: Option<[u8; 64]>,
-    /// Instrumentation only (monotonic ns); excluded from equality.
+    pub decode_failures: u64,
+
+    // Protocol-derived reserves (raw units).
+    pub base_reserve: u128,
+    pub quote_reserve: u128,
+    pub virtual_base_reserve: u128,
+    pub virtual_quote_reserve: i128,
+    pub token_total_supply: u128,
+    pub complete: bool,
+
+    // Trade activity.
+    pub trade_count: u64,
+    pub buy_count: u64,
+    pub sell_count: u64,
+    pub last_trade_slot: u64,
+    pub last_trade_timestamp: Option<i64>,
+    pub last_fee_bps: Option<u64>,
+    pub volume: VolumeWindow,
+
+    // Instrumentation only (monotonic ns); excluded from equality.
     pub first_seen_ns: u128,
     pub last_update_ns: u128,
 }
 
 impl MarketState {
-    /// Create the initial state for a newly observed market account.
+    /// Create the initial state for a newly observed market.
     pub fn new(key: MarketKey, now_ns: u128) -> Self {
         Self {
             key,
-            owner: None,
+            venue: None,
             status: MarketStatus::Observing,
+            base_mint: None,
+            quote_mint: None,
+            owner: None,
+            creator: None,
+            pool_base_token_account: None,
+            pool_quote_token_account: None,
             last_slot: 0,
             lamports: 0,
             data_len: 0,
@@ -55,14 +235,27 @@ impl MarketState {
             tx_count: 0,
             last_tx_slot: 0,
             last_tx_signature: None,
+            decode_failures: 0,
+            base_reserve: 0,
+            quote_reserve: 0,
+            virtual_base_reserve: 0,
+            virtual_quote_reserve: 0,
+            token_total_supply: 0,
+            complete: false,
+            trade_count: 0,
+            buy_count: 0,
+            sell_count: 0,
+            last_trade_slot: 0,
+            last_trade_timestamp: None,
+            last_fee_bps: None,
+            volume: VolumeWindow::new(DEFAULT_VOLUME_BUCKETS),
             first_seen_ns: now_ns,
             last_update_ns: now_ns,
         }
     }
 
-    /// Apply an account update. Returns `false` when the update is stale or a
-    /// duplicate (same or older `write_version`), in which case state is
-    /// untouched — this is what makes replayed events safe.
+    /// Apply an account update. Returns `false` for a stale/duplicate update
+    /// (same or older `write_version`), leaving state untouched.
     pub fn apply_account(&mut self, ev: &AccountUpdate, now_ns: u128) -> bool {
         if self.account_updates > 0 && ev.write_version <= self.write_version {
             return false;
@@ -75,12 +268,42 @@ impl MarketState {
         self.write_version = ev.write_version;
         self.account_updates += 1;
         self.last_update_ns = now_ns;
+        if let Some(decoded) = &ev.decoded {
+            self.apply_decoded_account(decoded);
+        }
         true
     }
 
-    /// Apply a transaction that touched this market. Returns `false` when the
-    /// transaction is an exact replay of the last one observed for this market.
-    pub fn apply_transaction(&mut self, ev: &TransactionUpdate, now_ns: u128) -> bool {
+    fn apply_decoded_account(&mut self, d: &DecodedAccount) {
+        self.venue = Some(d.venue);
+        self.base_mint = d.base_mint.or(self.base_mint);
+        self.quote_mint = d.quote_mint.or(self.quote_mint);
+        self.creator = d.creator.or(self.creator);
+        self.pool_base_token_account = d.pool_base_token_account.or(self.pool_base_token_account);
+        self.pool_quote_token_account =
+            d.pool_quote_token_account.or(self.pool_quote_token_account);
+        if let Some(v) = d.base_reserve {
+            self.base_reserve = v;
+        }
+        if let Some(v) = d.quote_reserve {
+            self.quote_reserve = v;
+        }
+        if let Some(v) = d.virtual_base_reserve {
+            self.virtual_base_reserve = v;
+        }
+        if let Some(v) = d.virtual_quote_reserve {
+            self.virtual_quote_reserve = v;
+        }
+        if let Some(v) = d.token_total_supply {
+            self.token_total_supply = v;
+        }
+        if let Some(v) = d.complete {
+            self.complete = v;
+        }
+    }
+
+    /// Record a transaction that touched this market (no swap decoded).
+    pub fn apply_touch(&mut self, ev: &TransactionUpdate, now_ns: u128) -> bool {
         if self.last_tx_signature == Some(ev.signature) {
             return false;
         }
@@ -91,15 +314,129 @@ impl MarketState {
         self.last_update_ns = now_ns;
         true
     }
+
+    /// Advance the market's slot watermark (used before applying swaps so the
+    /// volume bucket lands in the correct slot).
+    pub fn note_slot(&mut self, slot: u64) {
+        self.last_slot = self.last_slot.max(slot);
+    }
+
+    /// Seed identity/reserves from a `CreateEvent`.
+    pub fn apply_create(&mut self, c: &CreatedMarket, now_ns: u128) {
+        self.venue.get_or_insert(c.venue);
+        self.base_mint = Some(c.mint).or(self.base_mint);
+        self.quote_mint = c.quote_mint.or(self.quote_mint);
+        if let Some(v) = c.virtual_base_reserve {
+            self.virtual_base_reserve = v;
+        }
+        if let Some(v) = c.virtual_quote_reserve {
+            self.virtual_quote_reserve = v;
+        }
+        if let Some(v) = c.base_reserve {
+            self.base_reserve = v;
+        }
+        if let Some(v) = c.token_total_supply {
+            self.token_total_supply = v;
+        }
+        if let Some(ts) = c.timestamp {
+            self.last_trade_timestamp = Some(ts);
+        }
+        self.last_update_ns = now_ns;
+    }
+
+    /// Apply a decoded swap. Returns `false` if it is an exact replay.
+    pub fn apply_swap(&mut self, s: &DecodedSwap, now_ns: u128) -> bool {
+        self.venue.get_or_insert(s.venue);
+        self.base_mint = s.base_mint.or(self.base_mint);
+        self.quote_mint = s.quote_mint.or(self.quote_mint);
+        if let Some(v) = s.base_reserve {
+            self.base_reserve = u128::from(v);
+        }
+        if let Some(v) = s.quote_reserve {
+            self.quote_reserve = u128::from(v);
+        }
+        if let Some(v) = s.virtual_quote_reserve {
+            self.virtual_quote_reserve = v;
+        }
+        if let Some(ts) = s.timestamp {
+            self.last_trade_timestamp = Some(ts);
+        }
+        if let Some(bps) = s.fee_bps {
+            self.last_fee_bps = Some(bps);
+        }
+
+        self.trade_count += 1;
+        if s.is_buy {
+            self.buy_count += 1;
+        } else {
+            self.sell_count += 1;
+        }
+        self.volume
+            .record(self.last_slot, s.is_buy, s.quote_amount, s.base_amount);
+        self.last_trade_slot = self.last_slot;
+        self.last_update_ns = now_ns;
+        true
+    }
+
+    /// Reference (spot) price from pool/curve reserves: quote per base, raw.
+    pub fn spot_price_raw(&self) -> Option<Ratio> {
+        let base = self.virtual_base_reserve.max(self.base_reserve);
+        let quote = if self.virtual_quote_reserve > 0 {
+            self.virtual_quote_reserve as u128
+        } else {
+            self.quote_reserve
+        };
+        if base == 0 || quote == 0 {
+            // A zero side means there is no meaningful price, not a zero price.
+            return None;
+        }
+        Ratio::new(quote, base)
+    }
+
+    /// Executable constant-product price for a given input size.
+    ///
+    /// This is the average price actually realised by a trade of `amount`, not
+    /// the marginal reserve ratio: it applies the constant-product impact and
+    /// the fee. `amount` is quote-in for a buy and base-in for a sell.
+    /// Returns the raw quote-per-base price.
+    pub fn executable_price(&self, is_buy: bool, amount: u64, fee_bps: u64) -> Option<Ratio> {
+        let x = self.virtual_base_reserve; // base
+        let y = if self.virtual_quote_reserve > 0 {
+            self.virtual_quote_reserve as u128
+        } else {
+            self.quote_reserve
+        };
+        if x == 0 || y == 0 || amount == 0 {
+            return None;
+        }
+        let bps = 10_000u128;
+        let fee_bps = u128::from(fee_bps.min(10_000));
+        let amount = u128::from(amount);
+        if is_buy {
+            let net = amount.checked_mul(bps - fee_bps)? / bps;
+            let tokens_out = x.checked_mul(net)? / y.checked_add(net)?;
+            Ratio::new(amount, tokens_out)
+        } else {
+            let tokens_out = y.checked_mul(amount)? / x.checked_add(amount)?;
+            let net = tokens_out.checked_mul(bps - fee_bps)? / bps;
+            Ratio::new(net, amount)
+        }
+    }
 }
 
-// Deterministic equality: identical event sequences must yield identical
-// state. Monotonic timestamps are instrumentation and are therefore excluded.
+// Deterministic equality: identical event sequences must yield identical state.
+// Monotonic timestamps are instrumentation and are therefore excluded.
 impl PartialEq for MarketState {
     fn eq(&self, other: &Self) -> bool {
         self.key == other.key
-            && self.owner == other.owner
+            && self.venue == other.venue
             && self.status == other.status
+            && self.base_mint == other.base_mint
+            && self.quote_mint == other.quote_mint
+            && self.owner == other.owner
+            && self.creator == other.creator
+            && self.pool_base_token_account == other.pool_base_token_account
+            && self.pool_quote_token_account == other.pool_quote_token_account
             && self.last_slot == other.last_slot
             && self.lamports == other.lamports
             && self.data_len == other.data_len
@@ -109,6 +446,20 @@ impl PartialEq for MarketState {
             && self.tx_count == other.tx_count
             && self.last_tx_slot == other.last_tx_slot
             && self.last_tx_signature == other.last_tx_signature
+            && self.decode_failures == other.decode_failures
+            && self.base_reserve == other.base_reserve
+            && self.quote_reserve == other.quote_reserve
+            && self.virtual_base_reserve == other.virtual_base_reserve
+            && self.virtual_quote_reserve == other.virtual_quote_reserve
+            && self.token_total_supply == other.token_total_supply
+            && self.complete == other.complete
+            && self.trade_count == other.trade_count
+            && self.buy_count == other.buy_count
+            && self.sell_count == other.sell_count
+            && self.last_trade_slot == other.last_trade_slot
+            && self.last_trade_timestamp == other.last_trade_timestamp
+            && self.last_fee_bps == other.last_fee_bps
+            && self.volume == other.volume
     }
 }
 
@@ -119,48 +470,75 @@ mod tests {
     use super::*;
     use crate::events::AccountUpdate;
 
+    fn key(b: u8) -> MarketKey {
+        MarketKey([b; 32])
+    }
+
     fn update(write_version: u64, digest: u64) -> AccountUpdate {
         AccountUpdate {
-            pubkey: MarketKey([1u8; 32]),
+            pubkey: key(1),
             slot: 10,
-            owner: Some(MarketKey([2u8; 32])),
+            owner: Some(key(2)),
             lamports: 100,
             data_len: 8,
             data_digest: digest,
             write_version,
             is_startup: false,
             txn_signature: None,
+            decoded: None,
         }
     }
 
     #[test]
     fn rejects_stale_and_duplicate_updates() {
-        let mut s = MarketState::new(MarketKey([1u8; 32]), 0);
+        let mut s = MarketState::new(key(1), 0);
         assert!(s.apply_account(&update(5, 111), 1));
-        // Duplicate write_version.
         assert!(!s.apply_account(&update(5, 222), 2));
-        // Older write_version.
         assert!(!s.apply_account(&update(4, 333), 3));
         assert_eq!(s.data_digest, 111);
         assert_eq!(s.account_updates, 1);
-        // Newer write_version applies.
         assert!(s.apply_account(&update(6, 444), 4));
         assert_eq!(s.data_digest, 444);
     }
 
     #[test]
-    fn transaction_replay_is_idempotent() {
-        let mut s = MarketState::new(MarketKey([1u8; 32]), 0);
-        let tx = TransactionUpdate {
-            signature: [7u8; 64],
-            slot: 3,
-            index: 0,
-            is_vote: false,
-            success: true,
-            keys: vec![MarketKey([1u8; 32])],
-        };
-        assert!(s.apply_transaction(&tx, 1));
-        assert!(!s.apply_transaction(&tx, 2));
-        assert_eq!(s.tx_count, 1);
+    fn volume_window_accumulates_and_bounds() {
+        let mut w = VolumeWindow::new(3);
+        w.record(1, true, 100, 10);
+        w.record(1, false, 50, 5);
+        w.record(2, true, 200, 20);
+        assert_eq!(w.len(), 2);
+        let t = w.totals();
+        assert_eq!(t.buy_quote, 300);
+        assert_eq!(t.sell_quote, 50);
+        assert_eq!(t.trades, 3);
+        // Eviction keeps at most `capacity` buckets.
+        w.record(3, true, 1, 1);
+        w.record(4, true, 1, 1);
+        assert!(w.len() <= 3);
+        // Windowed query.
+        assert_eq!(w.totals_since(3).buy_quote, 2);
+    }
+
+    #[test]
+    fn price_is_exact_integer_ratio() {
+        let mut s = MarketState::new(key(1), 0);
+        s.virtual_base_reserve = 1_000;
+        s.virtual_quote_reserve = 2_000;
+        assert_eq!(s.spot_price_raw(), Ratio::new(2_000, 1_000));
+        // A buy of 100 quote with 0 fee: net 100, tokens = 1000*100/2100 = 47.
+        let p = s.executable_price(true, 100, 0).unwrap();
+        assert_eq!(p.den, 47);
+        assert_eq!(p.num, 100);
+        // Executable price is worse (higher) than spot for a buy.
+        assert!(p.as_f64() > s.spot_price_raw().unwrap().as_f64());
+    }
+
+    #[test]
+    fn market_state_size_is_bounded() {
+        // Guards against accidental unbounded growth of the hot-path state.
+        let size = std::mem::size_of::<MarketState>();
+        println!("size_of::<MarketState>() = {size} bytes");
+        assert!(size <= 768, "MarketState grew unexpectedly: {size} bytes");
     }
 }

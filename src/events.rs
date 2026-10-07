@@ -7,8 +7,10 @@
 
 use std::fmt;
 
+use base64::Engine as _;
 use yellowstone_grpc_proto::prelude::{subscribe_update::UpdateOneof, SubscribeUpdate};
 
+use crate::decode::{self, CreatedMarket, DecodedAccount, DecodedSwap};
 use crate::hash::fnv1a_64;
 
 /// A market identity: the 32-byte account pubkey that owns a market's state.
@@ -20,6 +22,13 @@ pub const SIGNATURE_LEN: usize = 64;
 /// A Solana message is bounded, but we cap defensively so a malformed or
 /// unusual message cannot inflate per-event memory.
 pub const MAX_TX_KEYS: usize = 64;
+/// Upper bound on decoded protocol events carried per transaction.
+pub const MAX_DECODED_EVENTS: usize = 16;
+/// Maximum decoded size of a `Program data:` payload we will consider.
+/// pump.swap swap events are ~450-500 bytes, so this must comfortably exceed
+/// them; anything larger is treated as not-our-event.
+const MAX_PROGRAM_DATA_LEN: usize = 2_048;
+const PROGRAM_DATA_PREFIX: &str = "Program data: ";
 
 /// Deterministic market identity.
 ///
@@ -123,6 +132,9 @@ impl NormalizedEvent {
 }
 
 /// The bounded set of events Neurone reacts to in Milestone 1.
+// Account/Transaction carry decoded protocol state inline to avoid an
+// allocation per event on the hot path; the size skew is intentional.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EventKind {
     Slot(SlotUpdate),
@@ -151,6 +163,8 @@ pub struct AccountUpdate {
     pub write_version: u64,
     pub is_startup: bool,
     pub txn_signature: Option<[u8; SIGNATURE_LEN]>,
+    /// Protocol-decoded account state, when the owner program is known.
+    pub decoded: Option<DecodedAccount>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,6 +176,12 @@ pub struct TransactionUpdate {
     pub success: bool,
     /// Account keys touched by the transaction, bounded and deduplicated.
     pub keys: Vec<MarketKey>,
+    /// Protocol swap/trade events decoded from program logs.
+    pub swaps: Vec<DecodedSwap>,
+    /// Markets created by this transaction.
+    pub creates: Vec<CreatedMarket>,
+    /// Known event payloads that failed to decode (malformed/truncated).
+    pub decode_rejected: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -228,16 +248,18 @@ fn normalize_account(
 ) -> Option<AccountUpdate> {
     let info = a.account.as_ref()?;
     let pubkey = MarketKey::from_slice(&info.pubkey)?;
+    let owner = MarketKey::from_slice(&info.owner);
     Some(AccountUpdate {
         pubkey,
         slot: a.slot,
-        owner: MarketKey::from_slice(&info.owner),
+        owner,
         lamports: info.lamports,
         data_len: info.data.len() as u64,
         data_digest: fnv1a_64(&info.data),
         write_version: info.write_version,
         is_startup: a.is_startup,
         txn_signature: info.txn_signature.as_deref().and_then(to_signature),
+        decoded: owner.and_then(|o| decode::decode_account(&o, &info.data)),
     })
 }
 
@@ -264,6 +286,14 @@ fn normalize_transaction(
             push_key(&mut keys, k);
         }
     }
+
+    let (swaps, creates, decode_rejected) = decode_transaction_payloads(info.meta.as_ref());
+    for swap in &swaps {
+        keys.push(swap.market_key);
+    }
+    for created in &creates {
+        keys.push(created.market_key);
+    }
     keys.sort_unstable();
     keys.dedup();
 
@@ -274,7 +304,51 @@ fn normalize_transaction(
         is_vote: info.is_vote,
         success: info.meta.as_ref().is_none_or(|m| m.err.is_none()),
         keys,
+        swaps,
+        creates,
+        decode_rejected,
     })
+}
+
+/// Decode protocol events from a transaction's program logs.
+///
+/// Bounded and allocation-light: only recognizable Anchor event payloads are
+/// decoded, at most [`MAX_DECODED_EVENTS`] per transaction.
+fn decode_transaction_payloads(
+    meta: Option<&yellowstone_grpc_proto::solana::storage::confirmed_block::TransactionStatusMeta>,
+) -> (Vec<DecodedSwap>, Vec<CreatedMarket>, u32) {
+    let mut swaps = Vec::new();
+    let mut creates = Vec::new();
+    let mut rejected = 0u32;
+    let Some(meta) = meta else {
+        return (swaps, creates, rejected);
+    };
+    for line in &meta.log_messages {
+        if swaps.len() + creates.len() >= MAX_DECODED_EVENTS {
+            break;
+        }
+        let Some(b64) = line.strip_prefix(PROGRAM_DATA_PREFIX) else {
+            continue;
+        };
+        // Cheap pre-filter before allocating the base64 decode (~1.34x).
+        if b64.len() > MAX_PROGRAM_DATA_LEN * 2 {
+            continue;
+        }
+        let Ok(payload) = base64::engine::general_purpose::STANDARD.decode(b64) else {
+            continue;
+        };
+        if payload.len() > MAX_PROGRAM_DATA_LEN {
+            continue;
+        }
+        if let Some(swap) = decode::decode_event(&payload) {
+            swaps.push(swap);
+        } else if let Some(created) = decode::decode_create_event(&payload) {
+            creates.push(created);
+        } else if decode::is_known_event_discriminator(&payload) {
+            rejected += 1;
+        }
+    }
+    (swaps, creates, rejected)
 }
 
 fn push_key(keys: &mut Vec<MarketKey>, bytes: &[u8]) {

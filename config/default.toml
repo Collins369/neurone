@@ -32,11 +32,16 @@ slot_updates = true
 block_meta = true
 # Transactions touching these programs. `account_include` keeps the filter
 # scoped (a filter with no account_include is rejected as a firehose on
-# non-PAYG streams).
-# pump.fun program id, from Solami's official gRPC SDK example.
-transaction_programs = ["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"]
-# Accounts owned by these programs are tracked as market states.
-account_programs = ["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"]
+# non-PAYG streams). Program ids from the official pump.fun IDLs:
+#   pump.fun bonding curve + pump.swap AMM.
+transaction_programs = [
+  "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+  "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+]
+# Accounts owned by these programs are tracked as market states. Left empty by
+# default: an owner-scoped account filter triggers a large startup snapshot.
+# Markets are created from decoded swap/create events instead.
+account_programs = []
 # Additional explicit account pubkeys to track as markets.
 account_addresses = []
 

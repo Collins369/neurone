@@ -145,16 +145,63 @@ impl Shard {
                 // that touches several markets in this shard is deduped once.
                 if let EventKind::Transaction(t) = &event.kind {
                     if !self.recent_tx.insert(t.signature) {
+                        self.metrics.incr_stale();
                         return;
                     }
                 }
                 let now = crate::clock::now_ns();
                 let e2e_ns = (now.saturating_sub(event.arrival_ns)).min(u64::MAX as u128) as u64;
                 let mut applied = 0u64;
-                for key in keys {
-                    if self.apply_to_market(&event, key, now) {
-                        applied += 1;
+
+                match &event.kind {
+                    EventKind::Account(a) => {
+                        let market = match self.markets.get_mut(&a.pubkey) {
+                            Some(m) => m,
+                            None => {
+                                self.metrics.incr_active_market();
+                                self.markets
+                                    .entry(a.pubkey)
+                                    .or_insert_with(|| MarketState::new(a.pubkey, now))
+                            }
+                        };
+                        if a.decoded.is_some() {
+                            self.metrics.incr_decoded();
+                        }
+                        if market.apply_account(a, now) {
+                            applied += 1;
+                        } else {
+                            self.metrics.incr_stale();
+                        }
                     }
+                    EventKind::Transaction(t) => {
+                        self.metrics.add_decode_rejected(t.decode_rejected);
+                        // Markets created by this transaction.
+                        for created in &t.creates {
+                            let market = self.market_mut(created.market_key, now);
+                            market.note_slot(t.slot);
+                            market.apply_create(created, now);
+                            self.metrics.incr_decoded();
+                        }
+                        // Swaps: reserve/volume updates on the owning market.
+                        for swap in &t.swaps {
+                            let market = self.market_mut(swap.market_key, now);
+                            market.note_slot(t.slot);
+                            market.apply_swap(swap, now);
+                            self.metrics.incr_decoded();
+                            self.metrics.incr_volume_update();
+                            self.metrics.incr_swap(swap.venue);
+                            applied += 1;
+                        }
+                        // Transaction observation on every touched market.
+                        for key in keys {
+                            if let Some(market) = self.markets.get_mut(&key) {
+                                if market.apply_touch(t, now) {
+                                    applied += 1;
+                                }
+                            }
+                        }
+                    }
+                    EventKind::Slot(_) | EventKind::BlockMeta(_) => {}
                 }
                 if applied > 0 {
                     // Shard service time: dequeue -> applied.
@@ -174,28 +221,14 @@ impl Shard {
         }
     }
 
-    /// Apply one event to one market owned by this shard.
-    fn apply_to_market(&mut self, event: &NormalizedEvent, key: MarketKey, now: u128) -> bool {
-        match &event.kind {
-            EventKind::Account(a) => {
-                let market = match self.markets.get_mut(&key) {
-                    Some(m) => m,
-                    None => {
-                        let m = MarketState::new(key, now);
-                        self.metrics.incr_active_market();
-                        self.markets.entry(key).or_insert(m)
-                    }
-                };
-                market.apply_account(a, now)
-            }
-            EventKind::Transaction(t) => match self.markets.get_mut(&key) {
-                Some(market) => market.apply_transaction(t, now),
-                // Transactions do not create markets; only account ownership
-                // does. Unknown keys are ignored deterministically.
-                None => false,
-            },
-            EventKind::Slot(_) | EventKind::BlockMeta(_) => false,
+    /// Get or create a market owned by this shard.
+    fn market_mut(&mut self, key: MarketKey, now: u128) -> &mut MarketState {
+        if !self.markets.contains_key(&key) {
+            self.metrics.incr_active_market();
         }
+        self.markets
+            .entry(key)
+            .or_insert_with(|| MarketState::new(key, now))
     }
 }
 

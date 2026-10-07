@@ -17,6 +17,7 @@
 pub mod bench;
 pub mod clock;
 pub mod config;
+pub mod decode;
 pub mod engine;
 pub mod error;
 pub mod events;

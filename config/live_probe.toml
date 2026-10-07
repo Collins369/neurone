@@ -1,0 +1,14 @@
+# Narrow, low-bandwidth configuration used to prove authenticated live
+# reception without triggering a startup snapshot of every program account.
+# Select with NEURONE_CONFIG=config/live_probe.toml
+
+[ingest]
+source = "solami"
+commitment = "processed"
+
+[ingest.filters]
+slot_updates = true
+block_meta = true
+transaction_programs = []
+account_programs = []
+account_addresses = []

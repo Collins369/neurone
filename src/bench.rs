@@ -25,6 +25,61 @@ pub struct BenchReport {
     pub latency_buckets: (Vec<u64>, Vec<u64>),
 }
 
+/// Pure protocol-decode throughput over real fixture bytes.
+#[derive(Debug, Clone)]
+pub struct DecodeBenchReport {
+    pub decodes: u64,
+    pub elapsed: Duration,
+    pub decodes_per_second: f64,
+    pub ns_per_decode: f64,
+}
+
+fn fixture_hex(s: &str) -> Vec<u8> {
+    let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))
+        .collect()
+}
+
+/// Decode the real fixture payloads repeatedly to measure decode cost.
+pub fn decode_microbench(iterations: u64) -> DecodeBenchReport {
+    use crate::decode;
+    let curve = fixture_hex(include_str!("../fixtures/pumpfun_bonding_curve.hex"));
+    let pf_trade = fixture_hex(include_str!("../fixtures/pumpfun_trade_event.hex"));
+    let pool = fixture_hex(include_str!("../fixtures/pumpswap_pool.hex"));
+    let ps_buy = fixture_hex(include_str!("../fixtures/pumpswap_buy_event.hex"));
+    let ps_sell = fixture_hex(include_str!("../fixtures/pumpswap_sell_event.hex"));
+    let pf_program = crate::events::MarketKey(decode::pumpfun::PROGRAM_ID);
+    let ps_program = crate::events::MarketKey(decode::pump_amm::PROGRAM_ID);
+
+    let mut sink = 0u64;
+    let start = Instant::now();
+    for _ in 0..iterations {
+        sink = sink.wrapping_add(
+            decode::decode_account(&pf_program, &curve)
+                .map_or(0, |d| d.base_reserve.unwrap_or(0) as u64),
+        );
+        sink = sink.wrapping_add(
+            decode::decode_account(&ps_program, &pool)
+                .map_or(0, |d| u64::from(d.base_mint.is_some())),
+        );
+        sink = sink.wrapping_add(decode::decode_event(&pf_trade).map_or(0, |s| s.quote_amount));
+        sink = sink.wrapping_add(decode::decode_event(&ps_buy).map_or(0, |s| s.quote_amount));
+        sink = sink.wrapping_add(decode::decode_event(&ps_sell).map_or(0, |s| s.quote_amount));
+    }
+    let elapsed = start.elapsed();
+    let decodes = iterations.saturating_mul(5);
+    let secs = elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+    std::hint::black_box(sink);
+    DecodeBenchReport {
+        decodes,
+        elapsed,
+        decodes_per_second: decodes as f64 / secs,
+        ns_per_decode: elapsed.as_nanos() as f64 / decodes.max(1) as f64,
+    }
+}
+
 /// Drive `events` synthetic events through the engine and report throughput.
 ///
 /// When `rate_per_sec` is `Some`, the producer is paced so the shards keep up
