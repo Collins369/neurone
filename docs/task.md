@@ -1,536 +1,441 @@
-# Task: M3.1 — Complete Pump.fun Yellowstone Trade-Time State
+# Task: Investigate Remaining Pump.fun SELL + Token-Target BUY Parity
 
 ## Objective
 
-Fix the remaining Pump.fun Yellowstone state problem discovered in M3.
+Investigate the remaining Pump.fun parity failures found in M3.1.
 
-M3 proved that the quote formulas themselves are correct, but Pump.fun SELL and token-target `buy` cannot currently be guaranteed exact from the transaction/event stream alone for a significant subset of live events because the event's reconstructed reserves are not always the true trade-time pre-state.
+Current live results:
 
-The M3 report states that the required fix is:
+- Pump.fun `buy_exact_sol_in` / `buy_exact_quote_in`: 100% exact.
+- PumpSwap SELL / `buy_exact_quote_in` / `buy`: 100% exact.
+- Pump.fun SELL: ~80% exact.
+- Pump.fun token-target `buy`: ~71% exact.
 
-> add a Pump.fun bonding-curve **account subscription through Yellowstone** and correlate it with the transaction/event stream, or implement a version-aware `TradeEvent` decoder if that is sufficient.
+Do not assume the remaining failures are a formula problem.
 
-The goal of this task is to make Pump.fun market state sufficiently complete that Neurone can continuously scan and track Pump.fun markets without relying on RPC polling in the hot path.
+The current evidence says the decoded event layout is internally consistent, but a significant subset of Pump.fun SELL/token-target BUY events do not satisfy the expected constant-product relationship. The bonding-curve account stream was added, but separate account/event arrival ordering only corroborates a subset of trades.
 
-Do not redesign Neurone.
+The purpose of this task is to determine the actual cause of those remaining failures.
 
-Do not implement trading/execution.
+This is an investigation task only.
 
-Do not reopen the entire protocol-parity investigation.
+Do not implement trading, Beam, TP/SL, capital allocation, or strategy logic.
 
----
-
-# 1. Source of Truth
-
-Use the existing M3 report:
-
-`MILESTONE_3_YELLOWSTONE_PARITY_REPORT.md`
-
-Important M3 findings:
-
-- PumpSwap is already 100% exact through Yellowstone:
-  - SELL: 10,683/10,683
-  - `buy_exact_quote_in`: 6,523/6,523
-  - `buy`: 2,435/2,435
-- Pump.fun exact-in BUYs are 528/528 exact.
-- Pump.fun SELL and token-target `buy` remain state-dependent.
-- The formula is not the identified problem.
-- The live event stream is insufficient for the true trade-time state in the affected cases.
-- M3 explicitly identifies the Pump.fun bonding-curve account stream as the required next direction.
-- M3 also identified foreign-event collisions and decoder/layout issues; preserve those fixes.
-
-Do not undo working M3 fixes.
+Do not prematurely change production quote formulas.
 
 ---
 
-# 2. First Inspect the Existing Code
+## 1. Documentation First
 
-Before changing anything, inspect:
+Before investigating the data, thoroughly inspect the official first-party Pump.fun documentation and source material relevant to these failures.
 
-- `src/ingest/solami.rs`
-- `src/events.rs`
-- `src/decode/pumpfun.rs`
-- `src/decode/mod.rs`
-- `src/quote.rs`
-- `src/engine.rs`
-- `src/shard.rs`
-- `src/config.rs`
-- existing Yellowstone subscription filters
-- existing tests
-- M3 validation harness
-- M3 report
+At minimum inspect:
 
-Understand exactly how transaction updates and account updates are currently handled.
+- official Pump program documentation
+- official IDL
+- `TradeEvent` definitions
+- SELL documentation
+- BUY documentation
+- `buy` / token-target BUY documentation
+- `buy_exact_*` documentation
+- bonding-curve account definitions
+- quote-mint / non-SOL support
+- creator fees
+- cashback
+- holder rewards
+- mayhem / related Pump program variants if officially documented
+- fee-program documentation
+- event/account layout evolution
+- any official SDK/source implementing the formulas
+- historical/breaking-change documentation relevant to TradeEvent layouts
 
-Reuse the existing Yellowstone connection and subscription infrastructure.
+Do not rely only on the previous reconciliation report.
 
-Do not create a second gRPC client.
+The goal is to determine whether the official sources already explain any observed anomalous events.
 
----
+For every relevant finding record:
 
-# 3. Determine the Correct Yellowstone State Source
+- source
+- file/document
+- instruction/event/account
+- exact field names
+- field order if relevant
+- formula if documented
+- version/layout
+- conditions under which the behavior applies
 
-Before implementing the correlation logic, establish exactly which Pump.fun account(s) contain the required bonding-curve state.
+If official documentation is silent, explicitly state that.
 
-The minimum required state is the state used by the already validated Pump.fun formulas:
-
-- virtual token/base reserve
-- virtual quote/SOL reserve
-- any required fee-related state
-- mint association
-- bonding-curve identity/address
-- account version/layout where relevant
-
-Use the existing protocol documentation/reconciliation work and the current decoder.
-
-If multiple Pump.fun account layouts exist, identify them explicitly.
-
-Do not assume one fixed byte layout for every historical account.
-
----
-
-# 4. Add Pump.fun Bonding-Curve Account Subscription
-
-Extend the existing Yellowstone subscription so the runtime receives the relevant Pump.fun bonding-curve account updates.
-
-Requirements:
-
-- Yellowstone gRPC only for the production/hot path
-- no RPC polling
-- no REST polling
-- reuse existing connection/authentication
-- maintain current transaction/event subscriptions
-- account updates must be filtered as narrowly as practical
-- do not subscribe indiscriminately to every Solana account if a Pump.fun-specific filter is available
-
-Document the exact Yellowstone account filter used.
+Do not invent explanations from undocumented assumptions.
 
 ---
 
-# 5. Build a Bonding-Curve State Cache
+## 2. Read the Existing Investigation Carefully
 
-Create a deterministic in-memory state cache keyed by the bonding-curve account/mint identity.
+Read:
 
-For each active Pump.fun bonding curve, retain only the state required for:
+- M2.2 reconciliation
+- M3 Yellowstone parity report
+- M3.1 Pump.fun state report
+- existing Pump.fun decoder
+- quote engine
+- validation harness
+- relevant regression tests
 
-- market filtering
-- exact quote calculation
-- state validation
-- trade-time correlation
+Preserve previous confirmed findings.
 
-At minimum, the state record should contain:
-
-```text
-bonding_curve_address
-mint
-virtual_token_reserves
-virtual_quote_reserves
-real_token_reserves
-real_quote_reserves
-fee-related fields if required
-account_version/layout
-slot
-write/update ordering information
-```
-
-Use exact integer types.
-
-No floating point.
-
-Avoid unnecessary allocations and locks in the hot path.
-
-The cache must support many markets concurrently.
+The known formulas should remain the baseline unless fresh ground truth disproves them.
 
 ---
 
-# 6. Correlate Account State With Transaction Events
+## 3. Isolate the Failing Events
 
-This is the core of the task.
-
-For every Pump.fun trade event:
-
-1. Identify the mint/bonding curve.
-2. Identify the relevant slot/update ordering.
-3. Obtain the correct trade-time bonding-curve state.
-4. Determine whether the event reserves are post-trade and reconstruct pre-state where appropriate.
-5. Validate:
-
-```text
-pre_state + trade_delta = post_state
-```
-
-where the protocol semantics require it.
-
-Do not simply use the latest account state.
-
-Do not simply use the event's reserve fields when they are known to be unreliable.
-
-Do not race a newer account update against an older transaction.
-
-The correlation logic must respect Solana/Yellowstone update ordering and slots.
-
----
-
-# 7. Handle Multiple Trades in the Same Transaction
-
-M3 specifically observed that multi-event transactions can make naive:
-
-```text
-pre = event_post - event_delta
-```
-
-reconstruction unreliable.
-
-Therefore test transactions containing:
-
-- one Pump.fun trade
-- multiple Pump.fun trades
-- multiple relevant events
-- multiple instructions in one transaction
-- transactions involving other programs
-
-For multi-event transactions, determine whether the true pre-state can be reconstructed from:
-
-- ordered transaction events
-- account update state
-- instruction ordering
-- event fields
-- or a combination
-
-Do not assume one event is independent of another.
-
----
-
-# 8. Account Layout / Version Handling
-
-M3 found that Pump.fun account/event layouts can vary.
-
-Implement explicit layout/version handling where required.
-
-Do not create a fragile decoder that assumes one fixed account length forever.
-
-For unknown layouts:
-
-```text
-UNKNOWN_LAYOUT
-```
-
-must be rejected safely.
-
-Never silently decode unknown bytes as a known version.
-
-Add tests for every layout currently supported by the project/evidence.
-
----
-
-# 9. Re-run Pump.fun Live Parity
-
-After implementing the account stream and correlation:
-
-run the live Yellowstone validation again.
-
-At minimum measure:
+Create a clean dataset of:
 
 ### Pump.fun SELL
 
-Target:
+Separate:
 
-**100% exact for valid/reconstructable events.**
-
-### Pump.fun `buy_exact_sol_in`
-
-Must remain:
-
-**100% exact.**
-
-### Pump.fun `buy_exact_quote_in`
-
-Must remain:
-
-**100% exact.**
-
-### Pump.fun token-target `buy`
-
-Target:
-
-**100% exact for valid/reconstructable events.**
-
-The existing M3 formula for token-target `buy` remains:
-
-```text
-sol = ceil(
-    virtual_quote_reserve * token_amount
-    /
-    (virtual_base_reserve - token_amount)
-)
-```
-
-Do not change the formula unless new ground-truth evidence proves it wrong.
-
----
-
-# 10. Yellowstone-Only Classification
-
-Update the M3 classification.
-
-The desired result is:
-
-| Path | Desired classification |
-|---|---|
-| Pump.fun SELL | YELLOWSTONE-ONLY EXACT |
-| Pump.fun `buy_exact_sol_in` | YELLOWSTONE-ONLY EXACT |
-| Pump.fun `buy_exact_quote_in` | YELLOWSTONE-ONLY EXACT |
-| Pump.fun token-target `buy` | YELLOWSTONE-ONLY EXACT |
-| PumpSwap SELL | YELLOWSTONE-ONLY EXACT |
-| PumpSwap `buy_exact_quote_in` | YELLOWSTONE-ONLY EXACT |
-| PumpSwap `buy` | YELLOWSTONE-ONLY EXACT |
-
-If any path cannot achieve this, do not fake the result.
-
-State precisely:
-
-- what state is missing
-- why Yellowstone does not provide it
-- whether the limitation is decoder, filter, ordering, layout, or actual protocol observability
-
----
-
-# 11. Preserve the Scanner Architecture
-
-This is not just a parity test.
-
-The resulting state feed must be usable by the future Neurone scanner.
-
-The intended flow is:
-
-```text
-                 YELLOWSTONE
-                      │
-             ┌────────┴────────┐
-             ↓                 ↓
-       Transactions         Accounts
-             │                 │
-             └────────┬────────┘
-                      ↓
-              Event Normalizer
-                      ↓
-              Market Identity
-                      ↓
-              State Correlation
-                      ↓
-             Parallel Sharded State
-                      ↓
-                Market Filters
-```
-
-Do not turn the system into:
-
-```text
-receive token
-→ finish token
-→ scan next token
-```
-
-Many Pump.fun and PumpSwap markets must be trackable simultaneously.
-
-Reuse the existing deterministic shard architecture.
-
-Do not add an unnecessary database to the hot path.
-
----
-
-# 12. State Freshness
-
-The cache must distinguish:
-
-- current state
-- stale state
-- unknown state
-
-A stale bonding-curve state must not be used for an exact quote.
-
-Define deterministic rules for:
-
-```text
-KNOWN
-STALE
-UNKNOWN
-```
-
-Include slot/update metadata so the quote engine knows whether the state is safe to use.
-
-Do not silently fall back to an older state.
-
----
-
-# 13. Performance
-
-Measure the added account stream/correlation cost.
-
-Report:
-
-- account updates/sec
-- transaction updates/sec
-- correlation latency
-- state-cache update latency
-- quote latency
-- p50
-- p95
-- p99
-- memory usage if practical
-- lock/contention behavior
-
-The account stream must not destroy the low-latency characteristics demonstrated by M3.
-
-Keep telemetry asynchronous.
-
----
-
-# 14. Regression Tests
-
-Add deterministic tests covering:
-
-1. single Pump.fun trade
-2. multiple Pump.fun trades in one transaction
-3. event + account state correlation
-4. correct trade-time state selection
-5. stale account state rejection
-6. unknown layout rejection
-7. supported account layouts
-8. Pump.fun SELL exact parity
-9. Pump.fun token-target BUY exact parity
-10. existing Pump.fun exact-in BUY parity
-11. existing PumpSwap parity
-12. foreign-event collision protection
-13. account-update ordering
-14. same-slot update handling where relevant
-
-All existing tests must remain green.
-
----
-
-# 15. No Scope Creep
-
-Do NOT implement:
-
-- Beam
-- transaction submission
-- automatic trading
-- TP/SL
-- capital arbitration
-- strategy logic
-- narrative analysis
-- social analysis
-- LLM logic
-- database persistence
-- RPC polling fallback
-
-This task is strictly:
-
-**Pump.fun Yellowstone state completeness + correlation + parity.**
-
----
-
-# 16. Required Final Report
-
-Create a technical report covering:
-
-## 1. Problem Confirmed
-
-What exactly caused the M3 Pump.fun state-dependent failures?
-
-## 2. Account Source
-
-Which Pump.fun account(s) were subscribed to and why?
-
-## 3. Yellowstone Subscription
-
-Exact account filter and subscription design.
-
-## 4. State Cache
-
-State structure, keying, freshness, and update ordering.
-
-## 5. Correlation Algorithm
-
-Explain exactly how transaction/event updates are correlated with account updates.
-
-Include multi-event transaction handling.
-
-## 6. Layout Handling
-
-Supported Pump.fun account versions/layouts.
-
-## 7. Live Parity Results
-
-Include:
-
-- samples
 - exact
-- mismatches
-- errors
-- classification
+- mismatch
+- decoder error
+- non-SOL/USDC
+- other quote mint
+- unknown variant
+- same-slot cases
+- multi-event transaction cases
 
-For every Pump.fun instruction.
+### Pump.fun token-target BUY
 
-## 8. Regression Results
+Use the same classification.
 
-Existing total test count and new tests.
+For every failing event capture as much as possible:
 
-## 9. Performance
+```text
+signature
+slot
+mint
+bonding curve
+quote mint
+instruction
+ix_name
+event discriminator
+all event fields
+virtual token reserve
+virtual quote reserve
+real token reserve
+real quote reserve
+token amount
+quote amount
+fee
+creator fee if present
+transaction instruction ordering
+inner instruction ordering
+account updates
+account slots
+account data/version/length
+other Pump-related events in transaction
+```
 
-Latency and throughput.
-
-## 10. Scanner Readiness
-
-State whether Pump.fun markets can now be continuously tracked in the parallel scanner without RPC polling.
-
-## 11. Remaining Limitations
-
-Only real limitations.
-
-## 12. Final Status
-
-Use exactly one:
-
-- `PASS`
-- `PASS WITH EXCLUSIONS`
-- `FAIL`
-
-The target is:
-
-**PASS**
-
-if all supported Pump.fun paths achieve exact Yellowstone-only parity.
+Do not discard useful fields merely because they are not currently used by the quote engine.
 
 ---
 
-# Completion Condition
+## 4. Compare Exact vs Failing Events
 
-The task is complete when Neurone can do:
+Find structural differences between exact and failing events.
+
+Compare:
+
+- SOL vs USDC
+- quote mint
+- account layout length
+- event payload length
+- event field presence
+- `ix_name`
+- instruction variant
+- fee bps
+- creator fee
+- cashback
+- holder reward
+- mayhem/variant flags
+- bonding curve version
+- transaction structure
+- number of trades in transaction
+- same-slot activity
+- event ordering
+- account update ordering
+- reserve deltas
+- real vs virtual reserves
+
+Do not assume ordering is the cause. Find evidence.
+
+---
+
+## 5. Reconstruct Actual On-Chain State
+
+For representative failures, reconstruct the trade as completely as possible.
+
+RPC may be used only as an investigation/ground-truth tool. It must not become a production hot-path dependency.
+
+For each representative failure determine:
+
+1. Actual account state immediately before the trade.
+2. Actual account state immediately after the trade.
+3. Event state.
+4. Instruction arguments.
+5. Token/quote transfers.
+6. Fee transfers.
+7. Other Pump instructions/events in the same transaction.
+
+Determine exactly which value differs.
+
+The question is:
+
+> What reserve state does the Pump.fun program actually use for this trade?
+
+---
+
+## 6. Investigate TradeEvent Semantics
+
+Do not assume `TradeEvent.virtual_*` always means the same thing.
+
+Determine from official source + empirical evidence whether the fields represent:
+
+- pre-state
+- post-state
+- synthetic state
+- accounting state
+- state after fees
+- state after another internal operation
+- variant-dependent state
+
+Test separately for:
+
+- normal SOL Pump.fun
+- non-SOL/USDC
+- creator-fee variants
+- cashback
+- holder rewards
+- mayhem/other official variants if applicable
+
+If semantics differ by variant, document the exact rule.
+
+---
+
+## 7. Investigate Transaction Ordering
+
+For failing transactions reconstruct:
 
 ```text
-Yellowstone
+outer instruction
     ↓
-Pump.fun transaction/event
-    +
-Pump.fun bonding-curve account state
+inner instructions
     ↓
-correct trade-time state
+program invocation order
     ↓
-exact quote
+events emitted
     ↓
-on-chain parity
+account writes
 ```
 
-for Pump.fun SELL and token-target BUY, while preserving the already-passing Pump.fun exact-in and all PumpSwap paths.
+Determine whether:
 
-At that point, Neurone should have a reliable Yellowstone-derived market-state foundation suitable for the next master build stage:
+- multiple trades occur
+- fees alter the curve between events
+- buybacks occur
+- rewards/cashback alter state
+- another instruction mutates the curve
+- events are emitted before/after relevant account writes
 
-**Discovery → deterministic filters/safety → pre-arm**
+Do not simply label something a "multi-event transaction." Show what happened.
 
-Do not proceed into execution after this task.
+---
 
-Write the final report to the existing investigation/report location.
+## 8. Investigate Same-Slot Ordering
+
+Test:
+
+- multiple transactions in one slot
+- transaction ordering
+- account update ordering
+- Yellowstone transaction stream ordering
+- Yellowstone account stream ordering
+
+Determine whether slot alone is insufficient.
+
+If a deterministic correlation key exists beyond slot, identify it.
+
+If exact state cannot be reconstructed from Yellowstone alone, identify the exact missing information.
+
+---
+
+## 9. Investigate Program Variants
+
+Specifically test whether failures correlate with:
+
+- quote mint
+- creator-fee configuration
+- cashback
+- holder rewards
+- mayhem
+- bonding curve version
+- newer Pump program variants
+- different instruction variants
+
+Do not call something a variant without evidence from program/source/data.
+
+---
+
+## 10. Formula Revalidation
+
+Only after understanding the failing-state semantics, compare:
+
+### A — Current Neurone formula
+
+### B — Formula explicitly documented by official Pump.fun sources
+
+### C — Formula implemented in official SDK/source
+
+### D — Formula derived directly from actual pre/post on-chain state
+
+Determine whether:
+
+- A = B = C = D
+- A differs because state input is wrong
+- formula is incomplete for a specific variant
+- another documented formula is required
+
+Do not modify production formulas merely to make samples pass.
+
+---
+
+## 11. Find the Minimum Correct Fix
+
+Once the root cause is proven, determine the smallest correct architectural fix.
+
+Possible outcomes:
+
+- decoder variant handling
+- event field interpretation
+- transaction instruction correlation
+- additional Yellowstone account filter
+- account state history
+- transaction-local state reconstruction
+- program-variant classification
+- additional event type
+- explicit unsupported variant
+- combination
+
+Do not implement the final fix yet unless a tiny investigative change is required to prove the hypothesis.
+
+The goal is to establish the correct design first.
+
+---
+
+## 12. Required Conclusions
+
+For Pump.fun SELL and token-target BUY, answer explicitly:
+
+1. What causes the mismatch?
+2. Is the existing formula correct?
+3. What state does the program actually use?
+4. What does `TradeEvent` actually represent?
+5. Why does the current Yellowstone event/state model fail?
+6. Can exact state be reconstructed from Yellowstone alone?
+7. If yes, what additional data/correlation is required?
+8. If no, exactly what information is unavailable?
+9. Does the issue affect only a variant/subset or the general Pump.fun path?
+10. What is the minimum fix required?
+
+---
+
+## 13. Required Evidence
+
+Do not conclude from aggregate percentages alone.
+
+Provide representative examples for:
+
+- at least 3 exact SELLs
+- at least 3 failing SELLs
+- at least 3 exact token-target BUYs
+- at least 3 failing token-target BUYs
+
+For each example show the values needed to reproduce the conclusion.
+
+Where useful:
+
+| Field | Exact sample | Failing sample | Interpretation |
+|---|---:|---:|---|
+
+---
+
+## 14. Output
+
+Write a technical investigation report:
+
+1. Documentation Findings
+2. Dataset / Sample Selection
+3. Pump.fun SELL Investigation
+4. Pump.fun Token-Target BUY Investigation
+5. Exact vs Failing Event Comparison
+6. TradeEvent Semantics
+7. Transaction / Instruction Ordering
+8. Account-State Correlation
+9. Program Variants
+10. Formula Reconciliation
+11. Root Cause
+12. Minimum Correct Fix
+13. Yellowstone-Only Feasibility
+14. Remaining Unknowns
+15. Evidence Register
+
+---
+
+## 15. Status Rules
+
+Use:
+
+- `CONFIRMED` — directly proven by official source or ground-truth reconstruction
+- `OBSERVED` — empirically observed but mechanism not formally established
+- `INFERRED` — strongly supported interpretation
+- `HYPOTHESIS` — plausible but not proven
+- `UNRESOLVED` — insufficient evidence
+
+Do not turn `INFERRED` or `HYPOTHESIS` into confirmed conclusions.
+
+---
+
+## Critical Rules
+
+1. Documentation first.
+2. Use official first-party Pump.fun sources wherever available.
+3. Re-run the investigation; do not merely reinterpret old results.
+4. Use real on-chain ground truth for representative failures.
+5. Keep SOL and non-SOL quote pairs separate.
+6. Keep Pump.fun instruction variants separate.
+7. Keep official program variants separate when evidence supports them.
+8. Do not change formulas before proving the root cause.
+9. Do not use RPC in production architecture.
+10. Do not implement execution.
+11. Do not broaden into general Neurone architecture work.
+12. Do not stop at "account stream lags."
+13. Determine whether event/state semantics explain the mismatch.
+14. If genuinely not reconstructable from Yellowstone, prove why.
+15. End with a concrete conclusion and minimum next action.
+
+## Completion Condition
+
+The investigation is complete when we can confidently answer:
+
+> Can Neurone quote Pump.fun SELL and token-target BUY exactly from Yellowstone, and if so, what exact state/correlation mechanism is required?
+
+If yes, define the minimum implementation fix.
+
+If no, define the precise protocol information Yellowstone does not expose and establish the correct exclusion boundary.
+
+Do not implement the final fix as part of this investigation unless explicitly necessary for validation.
+
+Write the report to the existing investigation/report directory.
 
 Do not overwrite the Neurone blueprint.
