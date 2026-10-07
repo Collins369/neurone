@@ -138,10 +138,10 @@ def collect(venue, n_target, path):
             "dataSlice": {"offset": 0, "length": 260}, "limit": 600}])["result"]["value"]["accounts"]
         keys = [a["pubkey"] for a in accs]
         disc = None
-    keys = keys[:120]
+    keys = keys[:320]
 
     def sigs(pk):
-        r = rpc("getSignaturesForAddress", [pk, {"limit": 40}])
+        r = rpc("getSignaturesForAddress", [pk, {"limit": 25}])
         return [(pk, s["signature"]) for s in (r.get("result") or [])] if r else []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
@@ -179,11 +179,14 @@ def collect(venue, n_target, path):
             out.append(ev)
         return out
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
-        for out in ex.map(fetch, sig_tasks):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as ex:
+        for i, out in enumerate(ex.map(fetch, sig_tasks)):
             samples.extend(out)
             if len(samples) >= n_target:
                 break
+            if i % 400 == 0:
+                json.dump(samples, open(path, "w"))
+                print(f"  {venue}: {i}/{len(sig_tasks)} txs -> {len(samples)} events", file=sys.stderr)
     json.dump(samples, open(path, "w"))
     print(f"saved {len(samples)} -> {path}")
 
