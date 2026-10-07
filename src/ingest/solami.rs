@@ -451,9 +451,18 @@ mod tests {
         let tx = req.transactions.get("txs").expect("tx filter");
         assert!(!tx.account_include.is_empty());
         assert_eq!(tx.vote, Some(false));
-        // Default configuration does not subscribe accounts by owner (that
-        // would trigger a large startup snapshot).
-        assert!(req.accounts.is_empty());
+        // Default configuration subscribes the pump.fun bonding-curve accounts
+        // (owner-scoped + BondingCurve memcmp) so a market invalidated by a fee
+        // sweep can be re-established from a fresh authoritative account update.
+        let acct = req.accounts.get("accounts").expect("account filter");
+        assert!(acct
+            .owner
+            .contains(&"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".to_string()));
+        assert_eq!(
+            acct.filters.len(),
+            1,
+            "expected the BondingCurve memcmp filter"
+        );
         assert!(req.slots.contains_key("slots"));
         assert!(req.blocks_meta.contains_key("blocks_meta"));
     }
@@ -472,6 +481,31 @@ mod tests {
         let acct = req.accounts.get("accounts").expect("account filter");
         assert!(!acct.owner.is_empty());
         assert!(!acct.account.is_empty());
+    }
+
+    /// The shipped/default configuration must actually deliver the authoritative
+    /// bonding-curve account updates that re-establish an invalidated market.
+    #[test]
+    fn default_subscription_targets_bonding_curves() {
+        use yellowstone_grpc_proto::prelude::subscribe_request_filter_accounts_filter::Filter;
+        use yellowstone_grpc_proto::prelude::subscribe_request_filter_accounts_filter_memcmp::Data;
+
+        let c = IngestConfig::default();
+        let req = build_subscribe_request(&c, None).unwrap();
+        let acct = req
+            .accounts
+            .get("accounts")
+            .expect("default account filter");
+        assert!(acct
+            .owner
+            .contains(&"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".to_string()));
+        match acct.filters.first().and_then(|f| f.filter.as_ref()) {
+            Some(Filter::Memcmp(m)) => {
+                assert_eq!(m.offset, 0);
+                assert_eq!(m.data, Some(Data::Base58("4y6pru6YvC7".to_string())));
+            }
+            other => panic!("expected BondingCurve memcmp filter, got {other:?}"),
+        }
     }
 
     #[test]

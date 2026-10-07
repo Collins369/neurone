@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use neurone::decode::{DecodedAccount, Venue};
+use neurone::decode::{DecodedAccount, DecodedSwap, Venue};
 use neurone::engine::Engine;
 use neurone::events::{AccountUpdate, EventKind, MarketKey, NormalizedEvent, TransactionUpdate};
 use neurone::market::{MarketState, ReserveState};
@@ -68,10 +68,47 @@ fn mutation_event(sig: u8, slot: u64, keys: Vec<MarketKey>) -> NormalizedEvent {
     }))
 }
 
+/// A successful pump.fun trade carrying fresh (authoritative) reserves.
+fn swap_event(market: MarketKey, slot: u64, sig: u8) -> NormalizedEvent {
+    let mut signature = [0u8; 64];
+    signature[0] = sig;
+    let swap = DecodedSwap {
+        venue: Venue::PumpFun,
+        market_key: market,
+        base_mint: Some(market),
+        quote_mint: None,
+        is_buy: true,
+        base_amount: 10,
+        quote_amount: 5,
+        user_quote_amount: 5,
+        base_reserve: Some(900_000_000),
+        quote_reserve: Some(6_000_000_000),
+        virtual_base_reserve: Some(1_073_000_000_000_000),
+        virtual_quote_reserve: Some(30_000_000_000),
+        fee_quote: 0,
+        fee_bps: Some(95),
+        timestamp: Some(1_700_000_000),
+        ix_name: None,
+    };
+    NormalizedEvent::new(EventKind::Transaction(TransactionUpdate {
+        signature,
+        slot,
+        index: 0,
+        is_vote: false,
+        success: true,
+        keys: vec![market],
+        swaps: vec![swap],
+        creates: Vec::new(),
+        decode_rejected: 0,
+        has_reserve_mutation: false,
+    }))
+}
+
 struct Rig {
     engine: Engine,
     handles: Vec<tokio::task::JoinHandle<()>>,
     handle: ShutdownHandle,
+    metrics: Arc<Metrics>,
 }
 
 fn start(shards: usize) -> Rig {
@@ -82,6 +119,7 @@ fn start(shards: usize) -> Rig {
         engine,
         handles,
         handle,
+        metrics,
     }
 }
 
@@ -147,6 +185,36 @@ async fn fresh_account_state_revalidates_market() {
     rig.shutdown().await;
 }
 
+/// The invalidation recovery is observable end to end: a sweep bumps
+/// `reserve_invalidations`, a fresh authoritative account update bumps
+/// `reserve_revalidations`, and the market returns to `Known`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recovery_is_observable_via_metrics() {
+    let rig = start(8);
+    let m = key(7);
+    rig.engine.route(account_event(m, 1, 100)).await.unwrap();
+    // A snapshot round-trips the shard, so every prior event is applied.
+    let _ = rig.market(m).await;
+    rig.engine
+        .route(mutation_event(1, 200, vec![m]))
+        .await
+        .unwrap();
+    let _ = rig.market(m).await;
+    assert_eq!(rig.metrics.snapshot().reserve_invalidations, 1);
+    assert_eq!(rig.metrics.snapshot().reserve_revalidations, 0);
+
+    // Fresh authoritative account update at/after the mutation slot recovers.
+    rig.engine.route(account_event(m, 2, 201)).await.unwrap();
+    let _ = rig.market(m).await;
+    let s = rig.metrics.snapshot();
+    assert_eq!(s.reserve_revalidations, 1);
+    assert_eq!(
+        rig.market(m).await.reserve_state(201, 150),
+        ReserveState::Known
+    );
+    rig.shutdown().await;
+}
+
 /// 7: an account update from *before* the mutation must not re-validate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stale_account_update_cannot_revalidate() {
@@ -183,6 +251,26 @@ async fn multiple_mutations_remain_invalidated() {
     let state = rig.market(m).await;
     assert_eq!(state.invalidated_at_slot, Some(201));
     assert_eq!(state.reserve_state(201, 150), ReserveState::Invalidated);
+    rig.shutdown().await;
+}
+
+/// A swap alone must NOT clear invalidation: only a fresh authoritative account
+/// update recovers the market (the fail-closed safety constraint).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn swap_alone_does_not_recover_invalidated_state() {
+    let rig = start(8);
+    let m = key(8);
+    rig.engine.route(account_event(m, 1, 100)).await.unwrap();
+    rig.engine
+        .route(mutation_event(1, 200, vec![m]))
+        .await
+        .unwrap();
+    // A later trade on the curve must not flip the market back to quotable.
+    rig.engine.route(swap_event(m, 201, 9)).await.unwrap();
+    let state = rig.market(m).await;
+    assert_eq!(state.reserve_state(201, 150), ReserveState::Invalidated);
+    assert!(state.invalidated_at_slot.is_some());
+    assert_eq!(rig.metrics.snapshot().reserve_revalidations, 0);
     rig.shutdown().await;
 }
 

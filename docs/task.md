@@ -1,580 +1,427 @@
-# NEURONE — M1/M2/M3 CODEBASE AUDIT
+# NEURONE — POST-M1/M2/M3 REQUIRED SAFETY FIXES
 
-## Objective
+## Role
 
-Perform a read-only engineering audit of the CURRENT Neurone repository.
+You are DeepSeek operating on the Neurone repository at:
 
-The purpose is to determine whether the code that is actually present in the repository genuinely satisfies the objectives of:
+`/home/xion/neurone`
 
-- M1 — Foundation / Yellowstone
-- M2 — Real Market State
-- M3 — Parallel State / Live State Correctness
+Use the available Neo Agent skills on the VPS before and during the work.
 
-Do NOT implement new features.
-Do NOT fix code.
-Do NOT create a new milestone.
-Do NOT move into M4/M5.
-
-This is an audit only.
-
-The milestone reports may claim that something is complete, but the repository code is the authority for this audit. Verify every important claim against the actual implementation and tests.
-
----
-
-# 1. Required workflow
-
-Before reviewing:
-
-1. Read `NEURONE_BLUEPRINT.md` completely.
-2. Inspect the current repository structure.
-3. Inspect the available Neo Agent skills on the VPS and use the relevant Rust/code-review/build/test skills.
-4. Read the existing M1/M2/M3 milestone reports that are present in the repository.
-5. Compare the reports against the actual source code.
-6. Run appropriate existing tests/build/checks where practical.
-7. Do NOT modify source code, configuration, tests, or reports.
-
-If a command would modify the repository, do not run it.
-
-The audit must be based primarily on:
-- actual source code;
-- actual tests;
-- actual build/check results;
-- blueprint requirements.
-
-Use milestone reports as claims to verify, not as proof by themselves.
-
----
-
-# 2. Audit M1 — Foundation / Yellowstone
-
-Determine whether the current code genuinely satisfies the M1 objectives.
-
-Review:
-
-### Rust/runtime foundation
-
-- Cargo project structure;
-- runtime entry point;
-- configuration;
-- error model;
-- logging/telemetry;
-- runtime lifecycle;
-- graceful failure behavior;
-- test structure.
-
-### Yellowstone
-
-Inspect the actual implementation of:
-
-- Solami Yellowstone connection;
-- authentication;
-- TLS;
-- subscription construction;
-- account filters;
-- transaction filters;
-- slot/block subscriptions;
-- processed commitment;
-- reconnect logic;
-- backoff;
-- stale-stream detection;
-- replay/from-slot behavior if implemented;
-- malformed/unexpected update handling.
-
-### Normalization
-
-Verify:
-
-- raw Yellowstone messages are converted into compact internal events;
-- relevant slot/transaction metadata is preserved;
-- program attribution is deterministic;
-- irrelevant events do not accidentally enter the trading/state path.
-
-### Parallel routing
-
-Verify:
-
-- events are routed to shards;
-- a market belongs to a deterministic shard;
-- the design does not depend on one global market lock;
-- routing does not secretly serialize all market processing.
-
-### M1 tests
-
-Run existing M1-related tests and identify:
-
-- what is actually tested;
-- what is only mocked;
-- what is only unit-tested;
-- what is genuinely live/integration tested;
-- any missing critical coverage.
-
-### M1 verdict
-
-Give:
-
-`PASS`, `PASS WITH LIMITATIONS`, `PARTIALLY RESOLVED`, or `FAIL`.
-
-Do not give PASS merely because the milestone report says PASS.
-
----
-
-# 3. Audit M2 — Real Market State
-
-Determine whether the current implementation genuinely satisfies M2.
-
-Review actual code for:
-
-### Market decoding
-
-- Pump.fun bonding curve decoding;
-- PumpSwap/AMM decoding;
-- account layouts;
-- instruction/event layouts;
-- discriminators;
-- Borsh decoding;
-- PDA/market identity logic;
-- malformed/unknown layout handling.
-
-### Market state
-
-Verify whether `MarketState` actually maintains the relevant information required by the blueprint, including where applicable:
-
-- mint;
-- pool/market identity;
-- reserves;
-- liquidity;
-- price;
-- volume;
-- slot;
-- venue/protocol;
-- lifecycle;
-- executable state;
-- freshness/state validity.
-
-Do not assume a field is meaningful merely because it exists. Trace where it is populated and updated.
-
-### State updates
-
-Trace the complete path:
-
-```text
-Yellowstone
-→ normalization
-→ decoding
-→ shard routing
-→ MarketState update
-```
-
-Determine whether the state actually remains continuously maintained rather than repeatedly reconstructed.
-
-### Quote/state relationship
-
-Review quote calculations and determine:
-
-- what state they consume;
-- whether they use exact integer arithmetic;
-- whether unsupported/stale/invalid state can accidentally be quoted;
-- whether the quote implementation matches the intended protocol semantics;
-- whether any known exclusions are safely rejected.
-
-Do not redesign quote math during this audit.
-
-### M2 tests
-
-Run the relevant tests and verify:
-
-- real fixtures;
-- decoder tests;
-- state tests;
-- live tests if available;
-- parity tests.
-
-Separate:
-- exact supported behavior;
-- known exclusions;
-- untested behavior;
-- claims unsupported by the current code.
-
-### M2 verdict
-
-Give:
-
-`PASS`, `PASS WITH LIMITATIONS`, `PARTIALLY RESOLVED`, or `FAIL`.
-
----
-
-# 4. Audit M3 — Parallel State / Live State Correctness
-
-This is the most important part of the audit.
-
-Review the complete M3 implementation.
-
-## A. Parallel state architecture
-
-Verify:
-
-- shard ownership;
-- deterministic shard selection;
-- per-market independence;
-- event routing;
-- absence of a global market-state lock;
-- whether one busy market can stall unrelated markets;
-- whether state updates are deterministic.
-
-Do not confuse "async" with "parallel." Inspect the actual execution model.
-
-Determine whether the architecture still matches:
-
-> many independent state machines + minimal synchronization
-
-from the blueprint.
-
----
-
-## B. State ordering
-
-Inspect how the code handles:
-
-- slot;
-- transaction index;
-- instruction/event ordering where available;
-- account write version;
-- arrival order vs chain order;
-- same-slot events;
-- out-of-order account updates;
-- duplicate updates.
-
-Determine whether the ordering assumptions are actually supported by fields provided by Yellowstone.
-
-Flag any invented or unjustified ordering assumptions.
-
----
-
-## C. State freshness and validity
-
-Inspect the actual implementation of:
-
-- `UNKNOWN`;
-- `KNOWN`;
-- `STALE`;
-- `INVALIDATED`;
-- state version;
-- invalidation slot;
-- account refresh/revalidation;
-- stale update rejection.
-
-Verify the transition rules from code.
-
-Particularly verify:
-
-```text
-KNOWN
-  ↓
-state-changing mutation
-  ↓
-INVALIDATED
-  ↓
-fresh authoritative update
-  ↓
-KNOWN
-```
-
-Do not test ARM/trigger/re-arm behavior. That belongs to the later Pre-Arming stage and is outside this audit.
-
----
-
-## D. M3.2 validation gate
-
-Review the actual pre-state validation logic.
-
-Verify:
-
-- previous-event handling;
-- post-state anchoring;
-- same-slot handling;
-- exact state equality;
-- account-cache corroboration;
-- `UnsupportedState`;
-- fail-closed behavior.
-
-Determine whether the implementation can accidentally quote a state that has not been proven.
-
----
-
-## E. M3.3 mutation handling
-
-Inspect the actual implementation of the Pump.fun reserve mutation handling.
-
-Verify:
-
-- `SweepProtocolFee`;
-- `SweepCreatorFee`;
-- mutation detection;
-- market invalidation;
-- state-version increment;
-- invalidation slot;
-- fresh account recovery;
-- stale account update rejection;
-- quote refusal while invalidated;
-- whether mutation affects only the appropriate market(s);
-- whether unrelated markets continue processing.
-
-Do not attempt to reverse-engineer or implement the sweep payload.
-
-The purpose is to audit the current implementation.
-
----
-
-## F. Fail-closed behavior
-
-Look specifically for paths where the code might accidentally do:
-
-```text
-unknown state → assume state → quote → trade
-```
-
-or:
-
-```text
-stale state → continue using old quote
-```
-
-or:
-
-```text
-mutation observed → silently ignore
-```
-
-Any such path is a critical finding.
-
----
-
-# 5. M3 performance / parallelism audit
-
-Review existing benchmark/test evidence and, where practical, run safe read-only performance tests.
-
-Look for:
-
-- global mutexes;
-- global RwLocks;
-- synchronous blocking in the hot path;
-- database calls;
-- RPC calls;
-- HTTP calls;
-- filesystem I/O;
-- unbounded allocations;
-- unnecessary protobuf retention;
-- serial iteration over all markets;
-- mutation handling that scans unrelated markets.
-
-Do not optimize anything.
-
-Simply identify whether the implementation respects the blueprint's hot-path constraints.
-
----
-
-# 6. Code quality / architecture audit
-
-Inspect for:
-
-- dead code;
-- TODOs that affect milestone correctness;
-- placeholders;
-- fake/synthetic implementations accidentally used by production paths;
-- duplicated logic;
-- inconsistent state representations;
-- unsafe assumptions;
-- error paths that silently continue;
-- configuration values that are ignored;
-- tests that don't exercise production code;
-- comments/docs that contradict implementation.
-
-Pay particular attention to cases where a milestone report says something is implemented but the production path does not actually use it.
-
----
-
-# 7. Blueprint compliance
-
-Compare the current implementation against these core invariants from the blueprint:
-
-1. Neurone is parallel.
-2. Market state is continuously maintained.
-3. Trading decisions are deterministic.
-4. The future trigger path is minimal.
-5. Executable value matters more than chart value.
-6. Capital limitation does not dictate market-processing architecture.
-7. Unknown execution conditions are unsafe.
-8. Hot path does not depend on slow external services.
-9. Telemetry does not block execution.
-10. Frontend is outside the trading hot path.
-
-For M1–M3, focus especially on invariants 1, 2, 3, 7, and 8.
-
-Do not penalize the repository for components that belong to later milestones.
-
----
-
-# 8. Run verification
-
-Run appropriate non-mutating commands such as:
-
-```text
-cargo test
-cargo test --all-targets
-cargo clippy --all-targets --all-features -- -D warnings
-cargo fmt --check
-cargo build --release
-```
-
-If a command is too expensive or unavailable, state that explicitly.
-
-If live tests require credentials and cannot run, do not fabricate results.
-
-Record exact results.
-
----
-
-# 9. Compare reports against reality
-
-Create a table:
-
-| Milestone | Report claim | Code evidence | Test evidence | Actual assessment |
-|---|---|---|---|---|
-| M1 | ... | ... | ... | PASS/PARTIAL/FAIL |
-| M2 | ... | ... | ... | PASS/PARTIAL/FAIL |
-| M3 | ... | ... | ... | PASS/PARTIAL/FAIL |
-
-Identify:
-
-### Overclaims
-
-Things the reports claim are complete but the code does not fully demonstrate.
-
-### Underclaims
-
-Things the code actually handles better than the reports suggest.
-
-### Important gaps
-
-Things required by M1–M3 that are genuinely missing.
-
-Do not invent gaps simply because a feature belongs to M4+.
-
----
-
-# 10. No implementation
-
-This is a STRICT READ-ONLY AUDIT.
-
-Do NOT:
-
-- modify Rust code;
-- modify Cargo files;
-- modify configuration;
-- modify tests;
-- modify reports;
-- refactor;
-- fix bugs;
-- add tests;
-- add dependencies;
-- create M3.3A implementation;
-- implement ARM;
-- implement M4 strategy;
-- implement Beam;
-- implement transaction execution.
-
-If you discover a problem, report it.
-
-Do not fix it.
-
----
-
-# 11. Deliverable
-
-Create:
+This is an implementation task based on the completed read-only M1/M2/M3 codebase audit:
 
 `M1_M2_M3_CODEBASE_AUDIT.md`
 
-The report must contain:
-
-## 1. Executive Summary
-
-One concise overall assessment.
-
-## 2. Repository / Architecture Reviewed
-
-List the important modules inspected.
-
-## 3. M1 Audit
-
-Requirements, code evidence, tests, findings, verdict.
-
-## 4. M2 Audit
-
-Requirements, code evidence, tests, findings, verdict.
-
-## 5. M3 Audit
-
-Requirements, code evidence, tests, findings, verdict.
-
-## 6. Cross-Milestone Findings
-
-Important architectural issues spanning M1–M3.
-
-## 7. Report-vs-Code Discrepancies
-
-Explicitly identify anything where the reports overstate or understate reality.
-
-## 8. Critical Findings
-
-Rank:
-
-- CRITICAL
-- HIGH
-- MEDIUM
-- LOW
-- INFORMATIONAL
-
-Only use CRITICAL/HIGH when justified by actual code evidence.
-
-## 9. Tests Actually Run
-
-Exact commands and results.
-
-## 10. Blueprint Compliance
-
-Explicitly assess the relevant invariants.
-
-## 11. Current Readiness
-
-State clearly whether the codebase is ready to move to M4.
-
-Use one of:
-
-- `READY FOR M4`
-- `READY FOR M4 WITH LIMITATIONS`
-- `NOT READY FOR M4`
-
-If not ready, identify the smallest concrete blocker(s).
-
-## 12. Recommended Next Action
-
-Do not create a new implementation plan.
-
-Simply state the minimum next action based on the evidence.
+The audit is the basis for the fixes below.
 
 ---
 
-# Final rule
+## 1. Objective
 
-The goal is NOT to make the milestone status look good.
+Implement **only the required fixes identified by the audit**.
 
-The goal is to answer one question accurately:
+Do NOT redesign Neurone.
+Do NOT reopen M1/M2/M3.
+Do NOT begin M4.
+Do NOT add ARM, trigger, strategy, capital, execution, TP/SL, or trading behavior.
 
-> "If we ignored all previous milestone reports and inspected the current Neurone code today, would we honestly say M1, M2, and M3 objectives have been implemented correctly?"
+The user's instruction is:
 
-Be skeptical.
+> Make the required fixes. Don't act where it isn't needed.
 
-Use source code and test evidence over documentation claims.
+Therefore this task is deliberately narrow.
 
-Do not invent certainty where the repository does not provide it.
+The two fixes that should actually be implemented now are:
+
+1. **Fix failed-transaction state mutation.**
+2. **Fix M3.3 invalidation recovery under the shipped/default runtime configuration.**
+
+The audit explicitly says the pre-state corroboration gate and quote wiring are M4 work and should **not** be implemented in this task.
+
+---
+
+# 2. Source of Truth
+
+Read completely before editing:
+
+- `NEURONE_BLUEPRINT.md`
+- `M1_M2_M3_CODEBASE_AUDIT.md`
+
+Also inspect the relevant current source and existing tests.
+
+Trust current source code and tests over historical milestone reports.
+
+Do not make changes merely because an old report says something should exist.
+
+---
+
+# 3. Fix A — Failed Transactions Must Not Mutate Market State
+
+## Problem
+
+The audit found:
+
+- `TransactionUpdate.success` is computed.
+- The runtime currently does not consume it before applying decoded swaps/creates.
+- A failed/reverted transaction carrying a decoded program event can therefore mutate `MarketState`.
+- Reserve-mutation invalidation can also currently react to failed transactions.
+
+This is a real correctness/safety defect.
+
+## Required behavior
+
+For a transaction where:
+
+`TransactionUpdate.success == false`
+
+the runtime must **not apply economic state mutations from that transaction**.
+
+At minimum, failed transactions must not:
+
+- apply decoded swaps;
+- apply decoded creates;
+- alter market reserves/volume/trade state;
+- cause reserve-mutation invalidation.
+
+Do not invent additional semantics beyond what is necessary.
+
+Keep normalization and observability intact where useful; this fix concerns whether failed transaction contents are allowed to mutate authoritative market state.
+
+## Implementation requirements
+
+- Locate the existing transaction application path in the shard/runtime.
+- Add the smallest correct guard at the appropriate boundary.
+- Prefer one centralized guard over scattered checks if that is cleaner and safer.
+- Preserve successful transaction behavior exactly.
+- Preserve existing Yellowstone ingestion behavior.
+- Preserve telemetry unless a specific metric would become misleading.
+- Do not change protocol decoding formulas.
+- Do not change quote math.
+- Do not change shard architecture.
+
+## Tests
+
+Add focused deterministic regression coverage proving:
+
+1. A successful transaction still applies its decoded swap/create.
+2. A failed transaction does not apply its decoded swap.
+3. A failed transaction does not create a market from a decoded create.
+4. A failed reserve-mutation transaction does not invalidate market state.
+
+Use the existing test style and helpers.
+
+Do not create broad or redundant tests.
+
+---
+
+# 4. Fix B — Make M3.3 Invalidation Recoverable in the Shipped Runtime
+
+## Problem
+
+The audit found:
+
+- `MarketState::invalidate()` correctly marks a market `Invalidated`.
+- `apply_account()` can clear invalidation when a fresh authoritative account update arrives.
+- `apply_swap()` currently does not clear invalidation.
+- The shipped/default configuration has:
+
+  `account_programs = []`
+
+  `account_addresses = []`
+
+- Therefore the default `neurone run` path does not receive the bonding-curve account updates required to recover an invalidated pump.fun market.
+- A market can therefore remain permanently invalidated.
+
+This is a real availability defect in the shipped configuration.
+
+## Required behavior
+
+After a reserve mutation invalidates a market, the market must remain fail-closed until a **fresh authoritative state** proves that the market state is usable again.
+
+Do NOT simply clear invalidation on any arbitrary event.
+
+The recovery rule must be deterministic and conservative.
+
+The audit explicitly identified the candidate direction:
+
+- a fresh authoritative pump.fun bonding-curve account update, OR
+- a post-mutation authoritative `TradeEvent`/state transition when that event itself provides sufficient proof of current reserves.
+
+You must inspect the current code and existing state model before choosing the minimal implementation.
+
+### Important safety constraint
+
+Do NOT turn this into:
+
+`INVALIDATED -> any swap -> KNOWN`
+
+unless the swap provides sufficient authoritative reserve information to prove the state is current and coherent.
+
+Do not weaken fail-closed behavior merely to make the market resume.
+
+If a safe recovery mechanism cannot be established from existing event/account information, keep the market invalidated and report that limitation rather than inventing a heuristic.
+
+## Default-runtime requirement
+
+The fix must work under the actual shipped/default runtime configuration.
+
+Do not solve the problem only by adding a test that manually injects an account update while the production configuration still receives no account updates.
+
+If subscribing to bonding-curve accounts is the safest minimal solution, assess its impact on the existing Yellowstone subscription architecture and configuration before changing it.
+
+Do not add polling/RPC.
+
+Do not introduce a new external service.
+
+Do not redesign the ingestion architecture.
+
+## Ordering requirement
+
+The audit found that the code stores `TransactionUpdate.index` but does not currently use it.
+
+Do NOT expand this task into implementing transaction-index ordering unless it is strictly necessary to make the invalidation recovery fix correct.
+
+Do not change unrelated ordering behavior.
+
+The goal is the smallest correct fix.
+
+---
+
+# 5. Tests for Fix B
+
+Add focused deterministic tests covering the actual recovery rule you implement.
+
+At minimum:
+
+1. Market becomes `Invalidated` after a reserve mutation.
+2. An older/non-authoritative update does NOT recover it.
+3. A fresh authoritative state update DOES recover it.
+4. Once recovered, the reserve state becomes usable again only when the existing freshness/validity rules permit it.
+5. If recovery proof is insufficient, the state remains `Invalidated`.
+
+Also add a regression test that exercises the **runtime/default configuration path** relevant to the defect, if practical within the existing architecture.
+
+Do not fake a production success merely by directly injecting an account event if the shipped runtime would never receive that event.
+
+---
+
+# 6. Do NOT Implement These Items
+
+Explicitly leave these alone:
+
+### M4 pre-state corroboration
+
+The audit says the `validate.rs` corroboration gate is not in the runtime.
+
+That is an M4 requirement.
+
+**Do not move or rewrite it now.**
+
+### Quote engine production wiring
+
+`quote()` is not currently on the production runtime path.
+
+That is expected before M4.
+
+**Do not wire quote → strategy → arm now.**
+
+### ARM / trigger / strategy
+
+Do not implement:
+
+- ARM
+- trigger detection
+- strategy scoring
+- market selection
+- capital arbiter
+- execution
+- Beam
+- entry
+- exit
+- TP/SL
+
+None of these belong in this task.
+
+### Transaction index ordering
+
+The audit notes the M3.3 report overclaimed this.
+
+Do not implement transaction-index ordering unless the minimal safe recovery fix genuinely requires it.
+
+### Protocol formula changes
+
+Do not alter:
+
+- Pump.fun formulas
+- PumpSwap formulas
+- fee primitives
+- quote math
+- decoder layouts
+
+### Architecture changes
+
+Do not:
+
+- add global locks;
+- add DB/RPC/HTTP to the hot path;
+- replace Yellowstone;
+- replace shard ownership;
+- redesign the engine;
+- introduce polling.
+
+---
+
+# 7. Required Validation
+
+After implementation:
+
+Run the appropriate existing checks, including where practical:
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --locked
+cargo build --release --locked
+```
+
+Run focused tests for the changed behavior.
+
+If live Solami validation is safe and credentials are already available, you may run the existing read-only live test/validation relevant to the changed behavior.
+
+Do not fabricate live results.
+
+Do not make unrelated source changes just to satisfy a test.
+
+---
+
+# 8. Regression Requirements
+
+Before finishing, verify that:
+
+- Existing M1 tests remain passing.
+- Existing M2 decoder/state/quote tests remain passing.
+- Existing M3 parity tests remain passing.
+- Existing mutation tests remain passing.
+- Successful transaction behavior is unchanged.
+- Supported quote parity remains exact.
+- No new warnings.
+- Formatting is clean.
+- No new global locks or blocking I/O were introduced.
+- No polling/RPC/HTTP was introduced into the hot path.
+
+Pay particular attention to proving that the fixes do not regress the independently verified M3 behavior.
+
+---
+
+# 9. Scope Discipline
+
+This is a **small corrective implementation**, not a new milestone.
+
+Before editing each file, ask:
+
+> Is this file actually required for one of the two fixes?
+
+If not, leave it unchanged.
+
+Avoid:
+
+- refactoring unrelated code;
+- renaming unrelated APIs;
+- cleanup unrelated to these defects;
+- rewriting reports;
+- changing blueprint files;
+- speculative hardening;
+- adding abstractions for future M4 work.
+
+Minimal diff is preferred.
+
+---
+
+# 10. Required Deliverable
+
+Create:
+
+`M1_M2_M3_REQUIRED_FIXES_REPORT.md`
+
+The report must contain:
+
+## A. Fixes implemented
+
+For each of the two fixes:
+
+- problem;
+- exact implementation;
+- files changed;
+- why the implementation is safe;
+- why it is minimal.
+
+## B. Recovery semantics
+
+Clearly state the final state transition for mutation recovery, for example:
+
+`KNOWN -> INVALIDATED -> [authoritative recovery condition] -> KNOWN`
+
+Use the actual implemented condition, not a hypothetical one.
+
+## C. Tests
+
+List:
+
+- focused tests added/changed;
+- full test result;
+- clippy;
+- fmt;
+- release build;
+- live validation if actually run.
+
+## D. Files changed
+
+Give an exact list.
+
+## E. Files intentionally NOT changed
+
+Mention the major items deliberately left alone:
+
+- M4 corroboration gate;
+- quote production wiring;
+- ARM/strategy/execution;
+- transaction-index ordering unless actually required;
+- protocol math;
+- architecture.
+
+## F. Remaining limitations
+
+Only list limitations that genuinely remain after these fixes.
+
+Do not invent new work.
+
+## G. Final verdict
+
+Use one of:
+
+- `FIXES COMPLETE — READY FOR M4`
+- `FIXES COMPLETE — READY FOR M4 WITH LIMITATIONS`
+- `NOT COMPLETE`
+
+The verdict must be based on actual tests and source inspection.
+
+---
+
+# 11. Final Rule
+
+The objective is **not** to make the code "more complete."
+
+The objective is to correct the two substantiated defects from the M1/M2/M3 audit and then stop.
+
+If something is not required for:
+
+1. failed-transaction safety, or
+2. safe M3.3 invalidation recovery,
+
+**do not change it.**
+
+Do not implement M4.
+Do not anticipate M4.
+Do not broaden the scope.
+
+At the end, report exactly what changed and what was intentionally left untouched.

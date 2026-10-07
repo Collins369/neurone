@@ -188,22 +188,27 @@ impl Default for IngestConfig {
 
 impl Default for FilterConfig {
     fn default() -> Self {
+        // Program ids from the official pump.fun IDLs.
+        let pumpfun = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".to_string();
+        let pumpswap = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".to_string();
         Self {
             slot_updates: true,
             block_meta: true,
             // Both venues are decoded in M2: the pump.fun bonding curve and the
-            // pump.swap AMM. Program ids come from the official pump.fun IDLs.
-            transaction_programs: vec![
-                "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P".to_string(),
-                "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".to_string(),
-            ],
-            // Owner-scoped account subscriptions trigger a large startup
-            // snapshot on Yellowstone, so they are opt-in. Markets are created
-            // from decoded swap/create events by default; pin explicit account
-            // addresses instead when you want account-driven state.
-            account_programs: Vec::new(),
+            // pump.swap AMM.
+            transaction_programs: vec![pumpfun.clone(), pumpswap],
+            // Subscribe the pump.fun bonding-curve accounts so market state is
+            // continuously maintained from an authoritative source and so an
+            // invalidated (post-fee-sweep) market can be re-established by a
+            // fresh account update. The memcmp discriminator narrows the
+            // owner filter to a single account type, so this is not a firehose;
+            // pin explicit `account_addresses` instead when a narrower feed is
+            // wanted (see `config/live_probe.toml`).
+            account_programs: vec![pumpfun],
             account_addresses: Vec::new(),
-            account_memcmp_base58: None,
+            account_memcmp_base58: Some(
+                bs58::encode(crate::decode::pumpfun::BONDING_CURVE_DISC).into_string(),
+            ),
             account_data_slice_len: None,
         }
     }

@@ -167,7 +167,13 @@ impl Shard {
                         if a.decoded.is_some() {
                             self.metrics.incr_decoded();
                         }
+                        let was_invalidated = market.invalidated_at_slot.is_some();
                         if market.apply_account(a, now) {
+                            // A fresh authoritative account update at or after an
+                            // invalidation re-establishes valid market state.
+                            if was_invalidated && market.invalidated_at_slot.is_none() {
+                                self.metrics.incr_reserve_revalidation();
+                            }
                             applied += 1;
                         } else {
                             self.metrics.incr_stale();
@@ -175,32 +181,41 @@ impl Shard {
                     }
                     EventKind::Transaction(t) => {
                         self.metrics.add_decode_rejected(t.decode_rejected);
-                        // Non-trade reserve mutation (pump.fun fee sweep):
-                        // invalidate every market this transaction touched so
-                        // stale state cannot be quoted or executed against.
-                        if t.has_reserve_mutation {
-                            for key in &keys {
-                                if let Some(market) = self.markets.get_mut(key) {
-                                    market.invalidate(t.slot);
-                                    self.metrics.incr_reserve_invalidation();
+                        // A failed (reverted) transaction is rolled back on
+                        // chain, so its decoded contents must not mutate
+                        // authoritative market state: no swaps, no creates, and
+                        // no reserve-mutation invalidation. Observation (the
+                        // touch below) still records that the market was
+                        // involved.
+                        if t.success {
+                            // Non-trade reserve mutation (pump.fun fee sweep):
+                            // invalidate every market this transaction touched
+                            // so stale state cannot be quoted or executed
+                            // against.
+                            if t.has_reserve_mutation {
+                                for key in &keys {
+                                    if let Some(market) = self.markets.get_mut(key) {
+                                        market.invalidate(t.slot);
+                                        self.metrics.incr_reserve_invalidation();
+                                    }
                                 }
                             }
-                        }
-                        // Markets created by this transaction.
-                        for created in &t.creates {
-                            let market = self.market_mut(created.market_key, now);
-                            market.note_slot(t.slot);
-                            market.apply_create(created, now);
-                            self.metrics.incr_decoded();
-                        }
-                        // Swaps: reserve/volume updates on the owning market.
-                        for swap in &t.swaps {
-                            let market = self.market_mut(swap.market_key, now);
-                            market.apply_swap(swap, t.signature, t.slot, now);
-                            self.metrics.incr_decoded();
-                            self.metrics.incr_volume_update();
-                            self.metrics.incr_swap(swap.venue);
-                            applied += 1;
+                            // Markets created by this transaction.
+                            for created in &t.creates {
+                                let market = self.market_mut(created.market_key, now);
+                                market.note_slot(t.slot);
+                                market.apply_create(created, now);
+                                self.metrics.incr_decoded();
+                            }
+                            // Swaps: reserve/volume updates on the owning market.
+                            for swap in &t.swaps {
+                                let market = self.market_mut(swap.market_key, now);
+                                market.apply_swap(swap, t.signature, t.slot, now);
+                                self.metrics.incr_decoded();
+                                self.metrics.incr_volume_update();
+                                self.metrics.incr_swap(swap.venue);
+                                applied += 1;
+                            }
                         }
                         // Transaction observation on every touched market.
                         for key in keys {

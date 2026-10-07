@@ -88,6 +88,7 @@ pub struct Metrics {
     pub(crate) volume_updates: AtomicU64,
     pub(crate) stale_events: AtomicU64,
     pub(crate) reserve_invalidations: AtomicU64,
+    pub(crate) reserve_revalidations: AtomicU64,
     pub(crate) swaps_pumpfun: AtomicU64,
     pub(crate) swaps_pumpswap: AtomicU64,
     pub(crate) invalid_events: AtomicU64,
@@ -115,6 +116,7 @@ pub struct MetricsSnapshot {
     pub volume_updates: u64,
     pub stale_events: u64,
     pub reserve_invalidations: u64,
+    pub reserve_revalidations: u64,
     pub swaps_pumpfun: u64,
     pub swaps_pumpswap: u64,
     pub invalid_events: u64,
@@ -163,6 +165,7 @@ impl Metrics {
             volume_updates: AtomicU64::new(0),
             stale_events: AtomicU64::new(0),
             reserve_invalidations: AtomicU64::new(0),
+            reserve_revalidations: AtomicU64::new(0),
             swaps_pumpfun: AtomicU64::new(0),
             swaps_pumpswap: AtomicU64::new(0),
             invalid_events: AtomicU64::new(0),
@@ -221,6 +224,13 @@ impl Metrics {
     /// mutation (e.g. a pump.fun fee sweep).
     pub fn incr_reserve_invalidation(&self) {
         self.reserve_invalidations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count a market whose invalidated state was re-established by a fresh
+    /// authoritative account update (the M3.3 recovery path). This makes the
+    /// invalidation lifecycle observable end to end.
+    pub fn incr_reserve_revalidation(&self) {
+        self.reserve_revalidations.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record the normalize+decode time for one update.
@@ -293,6 +303,7 @@ impl Metrics {
             volume_updates: self.volume_updates.load(Ordering::Relaxed),
             stale_events: self.stale_events.load(Ordering::Relaxed),
             reserve_invalidations: self.reserve_invalidations.load(Ordering::Relaxed),
+            reserve_revalidations: self.reserve_revalidations.load(Ordering::Relaxed),
             swaps_pumpfun: self.swaps_pumpfun.load(Ordering::Relaxed),
             swaps_pumpswap: self.swaps_pumpswap.load(Ordering::Relaxed),
             invalid_events: self.invalid_events.load(Ordering::Relaxed),
@@ -352,6 +363,7 @@ pub async fn report_loop(metrics: Arc<Metrics>, interval: Duration, shutdown: Sh
                     swaps_pumpswap = now.swaps_pumpswap,
                     stale_events = now.stale_events,
                     reserve_invalidations = now.reserve_invalidations,
+                    reserve_revalidations = now.reserve_revalidations,
                     events_per_second = (delta_events as f64 / secs).round() as u64,
                     state_updates = now.state_updates,
                     state_updates_per_second = (delta_updates as f64 / secs).round() as u64,

@@ -38,10 +38,16 @@ transaction_programs = [
   "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
   "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
 ]
-# Accounts owned by these programs are tracked as market states. Left empty by
-# default: an owner-scoped account filter triggers a large startup snapshot.
-# Markets are created from decoded swap/create events instead.
-account_programs = []
+# Accounts owned by these programs are tracked as market states. The pump.fun
+# program is subscribed so bonding-curve state is continuously maintained from
+# an authoritative source, and so a market invalidated by a fee sweep can be
+# re-established by a fresh account update. The memcmp discriminator below
+# narrows the owner filter to the BondingCurve account type only (not a
+# firehose). Use config/live_probe.toml for a slots-only probe.
+account_programs = ["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"]
+# Optional base58 anchor discriminator (byte offset 0) applied to the account
+# subscription. `4y6pru6YvC7` = pump.fun BondingCurve discriminator.
+account_memcmp_base58 = "4y6pru6YvC7"
 # Additional explicit account pubkeys to track as markets.
 account_addresses = []
 
