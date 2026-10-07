@@ -14,6 +14,7 @@ use std::time::Duration;
 use neurone::config::{Config, IngestSource};
 use neurone::engine::Engine;
 use neurone::ingest::solami::{self, TonicConnector};
+use neurone::quote::{quote, Side};
 use neurone::shutdown::shutdown_channel;
 use neurone::telemetry::Metrics;
 
@@ -53,6 +54,8 @@ async fn live_authenticated_stream_decodes_markets() {
     let token = solami::load_token().expect("token");
     let connector = TonicConnector::new(&config.ingest, token);
 
+    // Keep a clone so markets can be inspected while the stream is live.
+    let inspector = engine.clone();
     let ingest = solami::run(
         &config.ingest,
         &connector,
@@ -77,6 +80,23 @@ async fn live_authenticated_stream_decodes_markets() {
             _ = tokio::time::sleep(Duration::from_millis(200)) => {}
         }
     }
+    // Live reserve state + exact quote on a real market (before shutdown, while
+    // the shards are still running).
+    let snapshots = inspector.snapshot().await.expect("snapshot");
+    let with_reserves = snapshots
+        .iter()
+        .flat_map(|s| s.markets.iter())
+        .filter(|m| m.reserves_known)
+        .count();
+    if let Some(m) = snapshots
+        .iter()
+        .flat_map(|s| s.markets.iter())
+        .find(|m| m.reserves_known && m.venue == Some(neurone::decode::Venue::PumpSwap))
+    {
+        let q = quote(m, Side::Sell, 100_000, 25, m.last_reserve_slot, 150);
+        println!("live pump.swap sell quote on {}: {q:?}", m.key);
+    }
+
     handle.trigger();
     let _ = ingest.await;
     for h in shard_handles {
@@ -88,4 +108,8 @@ async fn live_authenticated_stream_decodes_markets() {
     assert!(s.events_received > 0);
     assert!(s.events_decoded > 0, "expected protocol decoding");
     assert!(s.active_market_states > 0, "expected markets");
+    assert!(
+        with_reserves > 0,
+        "expected at least one market with known reserves"
+    );
 }

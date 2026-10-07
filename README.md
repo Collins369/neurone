@@ -124,6 +124,7 @@ Secrets are **never** read from the TOML file and `.env` is gitignored.
 | `events` | Normalized event types + Yellowstone normalization |
 | `decode` | Protocol decoders (pump.fun bonding curve, pump.swap AMM) + Borsh + PDA |
 | `market` | Incremental per-market state |
+| `quote` | Exact integer protocol quote engine (pump.fun + pump.swap) |
 | `shard` | Independent shard task, dedup ring, shard-local maps |
 | `engine` | Shard routing + snapshots |
 | `ingest::solami` | Live Yellowstone gRPC ingestion (auth, ping, reconnect) |
@@ -147,6 +148,28 @@ All reserves/amounts are **raw integer units**; prices are exact integer ratios
 impact and fees. `fixtures/` holds real mainnet bytes used by
 `tests/real_fixtures.rs`, so the decoders are pinned to real data without being
 network-dependent.
+
+## Reserve state and exact quotes (Milestone 2.1)
+
+`MarketState` tracks reserve provenance explicitly (`reserves_known`,
+`last_reserve_slot`, `last_reserve_timestamp`, `last_reserve_signature`) and
+exposes `reserve_state(current_slot, stale_slots)` →
+`Unknown | Known | Stale`. An older (out-of-order) swap can never overwrite
+newer reserve state, and replayed swaps are idempotent. `[market]
+reserve_stale_slots` configures the freshness bound — an infrastructure
+setting, not a strategy rule. No RPC polling is used for freshness.
+
+`quote` computes exact integer quotes (`u128`, checked arithmetic, explicit
+rounding) for both venues:
+
+| Direction | Parity |
+|---|---|
+| pump.swap sell | exact vs real mainnet `SellEvent` |
+| pump.fun sell | exact vs real mainnet `TradeEvent` |
+| pump.swap buy | within ~1 ppm (exact parity not established) |
+| pump.fun buy | documented Uniswap-V2 form (exact parity not established) |
+
+See [`docs/MILESTONE_2_1_REPORT.md`](./docs/MILESTONE_2_1_REPORT.md).
 
 ## Not implemented (by design)
 

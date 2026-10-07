@@ -34,6 +34,64 @@ pub struct DecodeBenchReport {
     pub ns_per_decode: f64,
 }
 
+/// Quote-engine latency over a warm market state.
+#[derive(Debug, Clone)]
+pub struct QuoteBenchReport {
+    pub quotes: u64,
+    pub p50_ns: u64,
+    pub p95_ns: u64,
+    pub p99_ns: u64,
+    pub ns_per_quote: f64,
+}
+
+/// Measure `quote_buy`/`quote_sell` latency on a representative market.
+pub fn quote_microbench(iterations: u64) -> QuoteBenchReport {
+    use crate::decode::Venue;
+    use crate::quote::{quote, Side};
+    let mut m = crate::market::MarketState::new(crate::events::MarketKey([9u8; 32]), 0);
+    m.venue = Some(Venue::PumpSwap);
+    // A balanced pool so both sides produce a non-zero output at every size.
+    m.base_reserve = 1_000_000_000_000;
+    m.quote_reserve = 1_000_000_000;
+    m.reserves_known = true;
+    m.last_reserve_slot = 1_000;
+
+    let mut samples = Vec::with_capacity(iterations as usize);
+    let mut sink = 0u128;
+    for i in 0..iterations {
+        let side = if i % 2 == 0 { Side::Buy } else { Side::Sell };
+        let input = 1_000 + (i % 1_000_000);
+        let t = Instant::now();
+        match quote(&m, side, input, 25, 1_000, 150) {
+            Ok(q) => {
+                samples.push(t.elapsed().as_nanos() as u64);
+                sink = sink.wrapping_add(q.net_output);
+            }
+            // Degenerate sizes are counted as invalid, not fatal.
+            Err(_) => {
+                samples.push(t.elapsed().as_nanos() as u64);
+            }
+        }
+    }
+    std::hint::black_box(sink);
+    samples.sort_unstable();
+    let pick = |q: f64| -> u64 {
+        if samples.is_empty() {
+            return 0;
+        }
+        let idx = ((samples.len() as f64 * q).ceil() as usize).saturating_sub(1);
+        samples[idx.min(samples.len() - 1)]
+    };
+    let total: u64 = samples.iter().sum();
+    QuoteBenchReport {
+        quotes: iterations,
+        p50_ns: pick(0.50),
+        p95_ns: pick(0.95),
+        p99_ns: pick(0.99),
+        ns_per_quote: total as f64 / iterations.max(1) as f64,
+    }
+}
+
 fn fixture_hex(s: &str) -> Vec<u8> {
     let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
     (0..s.len())

@@ -42,6 +42,17 @@ pub struct Config {
     pub runtime: RuntimeConfig,
     pub ingest: IngestConfig,
     pub telemetry: TelemetryConfig,
+    pub market: MarketConfig,
+}
+
+/// Market-state infrastructure settings (not strategy rules).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MarketConfig {
+    /// A market's reserves are considered stale when the current slot exceeds
+    /// `last_reserve_slot` by more than this many slots. This is an
+    /// infrastructure freshness bound, not a trading threshold.
+    pub reserve_stale_slots: u64,
 }
 
 /// Task structure and channel sizing.
@@ -206,6 +217,15 @@ impl Default for TelemetryConfig {
         Self {
             report_interval_ms: 5_000,
             latency_boundaries_ns: DEFAULT_LATENCY_BOUNDARIES_NS.to_vec(),
+        }
+    }
+}
+
+impl Default for MarketConfig {
+    fn default() -> Self {
+        // ~60s at 400ms slots.
+        Self {
+            reserve_stale_slots: 150,
         }
     }
 }

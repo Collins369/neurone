@@ -1,495 +1,492 @@
-# NEURONE — MILESTONE 2 TASK
+# NEURONE — M2.1 CORRECTNESS HARDENING TASK
 
 **Repository:** `/home/xion/neurone`  
 **Source of truth:** `NEURONE_BLUEPRINT.md`  
-**Scope:** Milestone 2 only — real market-state decoding.  
+**Scope:** M2.1 only — harden the two known M2 market-state/execution-pricing limitations before M3.  
 **Agent:** DeepSeek via Codex  
 **Development tooling:** Existing Neo Agent skills at `/home/xion/neo-agent`
 
 ## Mission
 
-Extend the completed M1 foundation from generic Yellowstone-derived state into **real, protocol-derived market state**, while preserving the existing parallel/sharded architecture.
+Harden the completed M2 implementation without expanding Neurone into a trading system.
 
-Target:
+M2 successfully live-verified pump.fun bonding curves and pump.swap AMM events, protocol-derived reserves, reference/executable price primitives, per-slot volume, and the parallel market-state engine.
 
-```text
-REAL YELLOWSTONE EVENTS
-        ↓
-PROTOCOL / ACCOUNT DECODING
-        ↓
-REAL MARKET STATE
-   ├── price
-   ├── executable reserves/liquidity
-   ├── volume primitives
-   ├── slot/time evolution
-   └── protocol/market lifecycle state
-```
+M2 identified two correctness limitations:
 
-**Do not turn this into a serial scanner.**
+1. **pump.swap reserve freshness:** the Pool account does not contain current reserves, so current reserve state comes from observed Buy/Sell events.
+2. **exact executable pricing:** the current constant-product quote primitive may differ from exact on-chain integer rounding by a raw unit.
 
----
+Fix these cleanly.
+
+**Do not redesign M2. Do not start M3. Do not add trading.**
 
 ## 1. Read before coding
 
-Before modifying code:
+Read completely:
 
-1. Read `NEURONE_BLUEPRINT.md` completely.
-2. Read:
-   - `docs/MILESTONE_1_REPORT.md`
-   - `docs/SOLAMI_RESEARCH.md`
-   - `README.md`
-   - `config/default.toml`
-   - relevant `src/` and `tests/`
-3. Inspect the existing Neo Agent skills at `/home/xion/neo-agent` and use the relevant ones.
-4. Inspect git status/history and understand the existing M1 implementation.
-5. Preserve the M1 architecture unless a concrete correctness issue requires change.
-6. Do not modify the blueprint to fit implementation convenience.
+- `NEURONE_BLUEPRINT.md`
+- `docs/MILESTONE_2_REPORT.md`
+- `docs/SOLAMI_RESEARCH.md`
+- `README.md`
+- relevant `src/` and `tests/`
+- current `task.md` if present
+- relevant Neo Agent skills under `/home/xion/neo-agent`
 
----
+Inspect:
 
-## 2. First: prove M1 live with the new credential
-
-The operator has added the Solami credentials to the project-root `.env`.
-
-Before new decoding work:
-
-1. Load the environment securely.
-2. Run the existing M1 runtime against the real Solami Yellowstone endpoint.
-3. Verify authentication succeeds.
-4. Verify real `SubscribeUpdate` events are received.
-5. Verify they pass through:
-   `ingest → normalize → shard → market state`.
-6. Record useful live observations:
-   - event types;
-   - approximate event rate;
-   - slot progression;
-   - subscription behavior;
-   - unexpected event shapes;
-   - reconnect behavior if encountered.
-7. Never print, commit, or persist credentials.
-8. If authentication fails, stop and report the exact failure. Do not claim live verification.
-
-M1 previously had only one unverified item: live authenticated event reception.
-
----
-
-## 3. Solami documentation authority
-
-Use `docs/SOLAMI_RESEARCH.md` as the starting research record.
-
-If more documentation is needed, fetch the current official AI-agent index first:
-
-`https://solami.dev/llms.txt`
-
-Then follow the relevant official Solami documentation.
-
-Do not rely on remembered Yellowstone APIs or stale examples. Verify protocol/API assumptions against current Solami docs and published Rust/protobuf definitions.
-
-M1 established the current Yellowstone path:
-
-- `https://grpc.solami.dev:443`
-- `x-token` authentication
-- `geyser.Geyser/Subscribe`
-- `yellowstone-grpc-client`
-- `yellowstone-grpc-proto`
-- `processed` default commitment
-- `from_slot` replay
-- scoped account/transaction filters
-
-Preserve these unless current documentation proves otherwise.
-
----
-
-## 4. Pump.fun bonding-curve decoding
-
-Implement deterministic decoding of the relevant Yellowstone account/instruction data needed to derive:
-
-- market/pool identity;
-- token mint;
-- quote/base relationship where derivable;
-- virtual/actual reserves exposed by the protocol;
-- executable price primitive;
-- liquidity / available reserves;
-- relevant market lifecycle/state;
-- slot/timestamp;
-- volume-related information that can be reconstructed correctly.
-
-Do not invent fields. If a field cannot yet be calculated reliably, document that limitation.
-
-Use the current protocol layout/discriminators from authoritative sources, not guesses.
-
----
-
-## 5. One additional AMM
-
-After pump.fun decoding is correct and tested, implement **one additional AMM**.
-
-Choose it based on:
-
-1. relevance to Solana meme markets;
-2. reliable current account/instruction layout;
-3. compatibility with Yellowstone data;
-4. minimum implementation complexity.
-
-Document the selection.
-
-Do not implement multiple AMMs merely for breadth.
-
----
-
-## 6. MarketState contract
-
-Extend the existing `MarketState`; do not create a competing market model.
-
-Where genuinely derivable, support:
-
-```text
-market_id
-token_mint
-quote_mint
-venue / protocol
-slot
-observed_at
-price
-base_reserve
-quote_reserve
-liquidity
-per-slot volume primitive
-market_status
-protocol-specific state required later for execution
+```bash
+git status
+git log --oneline -10
 ```
 
-The exact fields may vary by venue.
+Identify which Neo skills are relevant, which files implement pump.swap state, which implement pricing/`Ratio`, which tests cover them, and which authoritative protocol sources define the exact math.
 
-Use explicit types and units. Do not silently mix raw amounts, UI amounts, lamports, SOL, or USD values.
+Use the relevant Neo Agent skills and report which were actually used.
 
----
+Do not modify `NEURONE_BLUEPRINT.md`.
 
-## 7. Executable price
-
-Distinguish, where the protocol allows:
-
-```text
-reference/spot price
-```
-
-from:
-
-```text
-executable buy/sell price
-```
-
-Do not treat a reserve ratio as the final executable transaction price when curve mechanics, fees, or price impact materially change it.
-
-M2 only builds the correct primitives. Do not construct or send trades.
-
----
-
-## 8. Volume model
-
-Do **not** implement the final strategy threshold yet.
-
-Establish the correct primitive from which later windows can be calculated, for example:
-
-```text
-per-slot buy volume
-per-slot sell volume
-per-slot total volume
-```
-
-or the protocol-correct equivalent.
-
-Determine exactly what the Yellowstone stream supports. Do not fabricate historical volume.
-
-If rolling aggregation is required, keep it per-market and compatible with thousands of concurrent market states.
-
-The later strategy may require 5-minute volume and accelerating volume, but those qualification rules belong to M3.
-
----
-
-## 9. Preserve true parallelism
+## 2. Preserve architecture
 
 Keep:
 
 ```text
 Yellowstone
     ↓
-Normalizer
+Normalizer / Decoder
     ↓
 hash(market)
     ↓
 parallel shards
-    ├── market A
-    ├── market B
-    ├── market C
-    └── ...
+    ↓
+MarketState
 ```
 
-Not:
+Do NOT introduce:
+
+- a serial scanner;
+- a central global market lock;
+- per-market RPC polling;
+- synchronous RPC on the hot path;
+- database dependencies;
+- Beam;
+- transaction construction;
+- wallet signing.
+
+The fix must remain compatible with thousands of concurrent markets.
+
+## 3. Fix A — pump.swap reserve state and freshness
+
+Maintain explicit pump.swap reserve state:
 
 ```text
-receive A → decode/analyze A → receive B → decode/analyze B → ...
+base_reserve
+quote_reserve
+reserves_known
+last_reserve_slot
+last_reserve_timestamp
+last_reserve_signature
 ```
 
-Preserve:
+A valid Buy/Sell event supplies the latest observed pool reserves and should update the market state.
 
-- deterministic shard routing;
-- per-market ordering;
-- no global market-state lock;
-- bounded channels/backpressure;
-- replay protection;
-- graceful shutdown;
-- existing telemetry.
+Do not replay the entire historical trade sequence when the event already provides authoritative pool reserves.
 
-If decoding is expensive, do not introduce a central serial decoding bottleneck.
-
----
-
-## 10. Real-event validation + deterministic fixtures
-
-Validate the decoders against real Yellowstone data after implementation.
-
-Create sanitized/reproducible fixtures from real protocol data where useful, but:
-
-- never store credentials;
-- do not make normal tests network-dependent;
-- keep the deterministic suite runnable without Solami access.
-
-Add tests for:
-
-### Protocol decoding
-
-- valid pump.fun account;
-- malformed/truncated data;
-- wrong discriminator/program;
-- invalid public keys;
-- impossible reserve/state combinations;
-- known expected reserve values;
-- known expected price calculation.
-
-### Market state
-
-- creation/update;
-- stale update rejection;
-- write-version ordering;
-- deterministic state transitions;
-- venue separation;
-- volume accumulation;
-- slot progression.
-
-### Parallelism
-
-- multiple independent markets update concurrently;
-- same market remains ordered;
-- different markets do not unnecessarily block;
-- deterministic shard routing;
-- existing 512-market test remains green.
-
-### Live integration
-
-Keep live validation separate from ordinary deterministic tests.
-
----
-
-## 11. Performance
-
-Benchmark against M1 and measure:
-
-- decode latency;
-- state-update latency;
-- event throughput;
-- memory per active market;
-- shard balance;
-- rolling-volume update cost.
-
-Report at minimum:
+Represent the state distinctly as:
 
 ```text
-events/sec
-decode p50/p95/p99
-state-update p50/p95/p99
-end-to-end p50/p95/p99
+UNKNOWN
+KNOWN + FRESH
+KNOWN + STALE
 ```
 
-Use realistic event patterns, not only flat synthetic bursts.
+or an equivalent clean model.
 
-Keep the hot path small.
-
----
-
-## 12. Observability
-
-Extend telemetry only where useful:
+Provide a deterministic freshness primitive such as:
 
 ```text
-events received
-events decoded
-events rejected
-decode failures by reason
-markets created
-markets updated
-volume updates
-stale/duplicate events
-live slot
-decode latency
-state-update latency
+is_reserve_state_fresh(...)
 ```
 
-No credential logging or uncontrolled high-cardinality hot-path logs.
+The stale threshold must be infrastructure/configuration, not an M3 strategy rule.
 
----
+Preserve per-market ordering. Older slot/write-version data must not overwrite newer reserve state. Duplicate/replayed events remain idempotent. Different pools remain independently parallel.
 
-## 13. Failure handling
+## 4. Do not solve freshness with RPC polling
+
+Do NOT poll every pool with RPC.
+
+Yellowstone remains the primary real-time state source.
+
+RPC is acceptable only for validation/tests/fixture generation and must not become the runtime reserve-refresh mechanism.
+
+## 5. Fix B — exact protocol executable quote engine
+
+Separate:
+
+```text
+OBSERVED MARKET STATE
+        ↓
+EXACT QUOTE ENGINE
+        ↓
+future qualification / arming
+        ↓
+future execution
+```
+
+Create a clean protocol-specific quote abstraction, conceptually:
+
+```text
+quote_buy(market_state, input_amount)
+quote_sell(market_state, input_amount)
+```
+
+The exact Rust API is up to the implementation.
+
+For each supported venue where executable quotes are claimed:
+
+- use exact integer protocol math;
+- include relevant fees;
+- use exact integer division;
+- use exact rounding direction;
+- enforce relevant constraints;
+- avoid floating point;
+- avoid UI-unit conversions in the hot path;
+- keep pump.fun and pump.swap formulas separate when their mechanics differ.
+
+## 6. Verify exact protocol math
+
+Do not rely on memory.
+
+Use authoritative current sources, starting from the official pump.fun IDLs and program/instruction definitions already used by M2.
+
+The goal is:
+
+```text
+Rust quote == protocol integer result
+```
+
+for deterministic known cases.
+
+Do not merely reproduce the existing M2 approximation.
+
+## 7. Exact quote tests
+
+Add deterministic fixtures for both venues covering:
+
+- normal buy;
+- normal sell;
+- tiny input;
+- large input;
+- fee-bearing trade;
+- zero input;
+- zero reserves;
+- insufficient reserves;
+- non-even integer division;
+- rounding boundaries;
+- maximum safe integer values;
+- overflow protection.
+
+Assert exact integer equality, not epsilon-based approximate equality.
+
+Where possible, compare against known on-chain event outputs.
+
+## 8. Quote result
+
+Expose enough information for later M3/M4:
+
+```text
+input_amount
+gross_output
+fee_amount
+net_output
+effective_price
+venue
+side
+valid / invalid
+reason
+```
+
+Do not add strategy fields such as TP, SL, target multiple, capital allocation, or slippage policy.
+
+## 9. Fresh executable-state concept
+
+Make it possible for later milestones to distinguish:
+
+```text
+market exists
+```
+
+from:
+
+```text
+market has current executable state
+```
+
+A simple representation may distinguish:
+
+```text
+identity_known
+reserves_unknown
+reserves_known
+reserves_stale
+quote_supported
+quote_unsupported
+```
+
+Do not build the M3 safety/qualification state machine.
+
+## 10. Venue separation
+
+Keep pump.fun and pump.swap behavior explicit.
+
+Pump.fun:
+
+- bonding-curve state comes from the bonding-curve account;
+- trade events also contain reserve information.
+
+Pump.swap:
+
+- pool identity comes from the Pool account;
+- current reserve state comes from observed swap events.
+
+Do not force both into an incorrect identical state model.
+
+## 11. Real mainnet validation
+
+After implementation, validate against authenticated Solami Yellowstone again.
+
+Verify:
+
+### pump.fun
+- real trade event;
+- decoded reserves;
+- quote calculation;
+- reserve/state update.
+
+### pump.swap
+- real buy event;
+- real sell event;
+- pool reserve update;
+- freshness tracking;
+- exact quote result.
+
+Never log or persist credentials.
+
+Normal tests must remain network-independent.
+
+## 12. Cross-check quote calculations
+
+Where possible:
+
+```text
+observed swap input
+observed output
+observed reserves
+observed fee
+        ↓
+quote engine
+        ↓
+expected output
+```
+
+Expected output must match the actual protocol event exactly when the same state/input semantics apply.
+
+If an event cannot provide an exact comparison because of protocol-specific semantics, document why.
+
+## 13. Performance
+
+Measure:
+
+```text
+quote_buy p50/p95/p99
+quote_sell p50/p95/p99
+reserve-update p50/p95/p99
+```
+
+Rerun important M2 benchmarks to detect regressions.
+
+Keep the quote engine allocation-light and hot-path suitable.
+
+## 14. Failure handling
 
 Safely handle:
 
-- malformed account data;
-- unknown protocols/accounts;
-- unknown discriminators;
-- incomplete instruction data;
-- stale events;
-- duplicate events;
-- stream reconnects;
-- protocol decode errors;
-- unexpected account layouts.
+- zero reserves;
+- zero input;
+- insufficient liquidity;
+- overflow;
+- invalid fees;
+- malformed state;
+- stale reserves;
+- unsupported quote mint;
+- unsupported venue;
+- invalid protocol state.
 
-Malformed market data must not crash the runtime.
+Return deterministic results/errors. Never panic on malformed market data.
 
-Unknown/unrecognized data should be deterministically rejected/ignored and counted.
+## 15. Explicit non-goals
 
----
+Do NOT implement:
 
-## 14. Explicit non-goals
-
-Do **not** implement:
-
-- final market filters;
-- `$10k / 5m` threshold;
-- low-MC qualification;
-- accelerating-volume qualification;
+- M3 volume filters;
+- 5-minute qualification;
+- accelerating-volume strategy;
+- low-MC strategy;
+- liquidity thresholds;
 - safety qualification;
 - pre-arming;
 - capital arbitration;
-- buy/sell decisions;
-- TP/SL;
 - wallet signing;
 - transaction construction;
 - Beam;
+- live buying/selling;
+- TP/SL;
 - frontend;
 - LLM/narrative analysis;
-- autonomous strategy modification.
+- autonomous strategy changes.
 
-M2 produces the correct market-state primitives for M3.
+M2.1 is correctness hardening only.
 
-Do not add Blur, ShredDirect, unnecessary RPC polling, unnecessary database infrastructure, or other Solami products unless genuinely required for M2.
+## 16. Tests
 
----
+All M1/M2 tests must remain green.
 
-## 15. Documentation
+Add tests for:
 
-Create/update:
+### Reserve state
+- first swap establishes reserves;
+- newer swap replaces reserves;
+- older swap cannot overwrite newer state;
+- duplicate swap is idempotent;
+- stale state is detected;
+- unknown state is represented;
+- multiple pools remain independent.
+
+### Quote engine
+- exact buy outputs;
+- exact sell outputs;
+- exact fees;
+- exact rounding;
+- zero/invalid inputs;
+- boundary values;
+- overflow safety;
+- venue-specific formulas.
+
+### Parallelism
+Prove reserve/quote logic does not introduce a serial/global bottleneck.
+
+## 17. Documentation
+
+Create:
 
 ```text
-docs/MILESTONE_2_REPORT.md
+docs/MILESTONE_2_1_REPORT.md
 ```
 
-Report:
+Document:
 
-1. implementation summary;
-2. changed M1 files;
-3. Solami documentation consulted;
-4. decoded protocols;
-5. exact account/instruction layouts;
-6. exact price/liquidity/volume formulas;
-7. units and decimal handling;
-8. live-event validation;
-9. tests/pass counts;
-10. performance;
-11. limitations/assumptions;
-12. recommended M3.
+1. original issue;
+2. root cause;
+3. implementation;
+4. reserve-state model;
+5. freshness model;
+6. exact quote formulas;
+7. protocol sources;
+8. integer/rounding behavior;
+9. tests;
+10. live validation;
+11. performance;
+12. limitations;
+13. recommended M3.
+
+For each issue explicitly state:
+
+```text
+FIXED
+PARTIALLY FIXED
+REMAINS A LIMITATION
+```
 
 Do not modify `NEURONE_BLUEPRINT.md`.
 
----
+## 18. Verification
 
-## 16. Verification and git
-
-Before completion:
+Run:
 
 ```bash
 cargo fmt --check
 cargo test
 cargo clippy --all-targets
-cargo build
+cargo build --release
 ```
 
 Run relevant benchmarks.
 
-Review the diff for:
+Inspect the final diff for:
 
 - accidental secrets;
-- unnecessary files;
-- blueprint changes;
-- unrelated architecture changes;
+- unnecessary dependencies;
 - debug logging;
-- dead code.
+- RPC polling;
+- serial bottlenecks;
+- global locks;
+- unrelated M3 code;
+- blueprint changes.
 
-Commit M2 with a clear commit message.
+## 19. Git
 
-**Do not begin M3 automatically.**
+Commit completed M2.1 work with a clear commit message.
 
----
+Do not start M3 automatically.
 
-## 17. Final report
+Stop after M2.1.
 
-Return exactly this structure:
+## Final response format
+
+Return exactly:
 
 ```text
-M2 status:
-Live Yellowstone:
-Pump.fun decoding:
-Second AMM:
-MarketState:
-Volume model:
-Parallelism:
+M2.1 status:
+Reserve-state fix:
+Reserve freshness:
+Exact quote engine:
+Pump.fun:
+Pump.swap:
+Exact rounding:
+Live validation:
 Tests:
 Clippy:
 Build:
-Benchmarks:
-Real-event validation:
+Performance:
 Known limitations:
+Neo Agent skills used:
 Git commit:
-Recommended M3:
+M3 readiness:
 ```
 
-Clearly distinguish:
+Clearly distinguish verified live behavior, deterministic fixture/test evidence, and remaining assumptions.
 
-- verified live behavior;
-- deterministic fixture/test evidence;
-- unverified assumptions.
+Never claim exact protocol parity unless tests establish it.
 
-Never claim live verification unless real authenticated Yellowstone events were actually received and decoded.
+# DEFINITION OF DONE
 
----
-
-# M2 DEFINITION OF DONE
-
-- [ ] Real Solami authentication succeeds using the supplied environment credential.
-- [ ] Real Yellowstone events are received.
-- [ ] Pump.fun market/account state is decoded correctly.
-- [ ] One additional AMM is decoded correctly.
-- [ ] `MarketState` contains correct protocol-derived price/liquidity/reserve primitives.
-- [ ] A deterministic volume primitive exists for later rolling windows.
-- [ ] Existing parallel sharded architecture is preserved.
-- [ ] Real-event validation succeeds.
-- [ ] Deterministic decoder fixtures/tests exist.
-- [ ] `cargo test` passes.
-- [ ] `cargo clippy --all-targets` is clean.
-- [ ] `cargo build` succeeds.
-- [ ] M2 performance is measured.
-- [ ] No trading/Beam/strategy logic is introduced.
-- [ ] `docs/MILESTONE_2_REPORT.md` is complete.
-- [ ] M2 is committed.
+- [ ] pump.swap reserve state is explicit and freshness-aware.
+- [ ] Older/replayed events cannot overwrite newer reserve state.
+- [ ] No per-market RPC polling was introduced.
+- [ ] Exact protocol-specific quote engine exists.
+- [ ] Buy and sell calculations use integer arithmetic.
+- [ ] Fees are represented correctly.
+- [ ] Exact rounding behavior is tested.
+- [ ] Boundary/overflow cases are tested.
+- [ ] Real mainnet events validate the implementation.
+- [ ] Existing M1/M2 tests remain green.
+- [ ] New correctness tests pass.
+- [ ] Clippy clean.
+- [ ] Release build succeeds.
+- [ ] Performance regression is measured.
+- [ ] `docs/MILESTONE_2_1_REPORT.md` exists.
+- [ ] Neo Agent skills were actually inspected and used.
+- [ ] No M3/trading/Beam logic was introduced.
+- [ ] Work is committed.
 - [ ] Work stops.
-
-**Do not proceed to Milestone 3 without operator authorization.**

@@ -24,6 +24,7 @@ pub mod events;
 pub mod hash;
 pub mod ingest;
 pub mod market;
+pub mod quote;
 pub mod runtime;
 pub mod shard;
 pub mod shutdown;

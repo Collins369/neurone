@@ -73,6 +73,11 @@ fn run() -> anyhow::Result<()> {
                 "decode bench: decodes={} elapsed={:.3}s decodes_per_second={:.0} ns_per_decode={:.0}",
                 d.decodes, d.elapsed.as_secs_f64(), d.decodes_per_second, d.ns_per_decode
             );
+            let q = neurone::bench::quote_microbench(n);
+            println!(
+                "quote bench: quotes={} ns_per_quote={:.0} p50={}ns p95={}ns p99={}ns",
+                q.quotes, q.ns_per_quote, q.p50_ns, q.p95_ns, q.p99_ns
+            );
             Ok::<(), anyhow::Error>(())
         }),
         "check" => {

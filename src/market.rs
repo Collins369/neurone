@@ -29,6 +29,18 @@ pub enum MarketStatus {
     Observing,
 }
 
+/// Freshness of a market's reserve state (infrastructure concept, not strategy).
+///
+/// `Unknown` — identity known, but no authoritative reserves observed yet.
+/// `Known`   — reserves observed within the configured slot tolerance.
+/// `Stale`   — reserves observed, but not recently enough to trust.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ReserveState {
+    Unknown,
+    Known,
+    Stale,
+}
+
 /// An exact rational price: `num / den` raw quote units per raw base unit.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Ratio {
@@ -208,6 +220,14 @@ pub struct MarketState {
     pub last_fee_bps: Option<u64>,
     pub volume: VolumeWindow,
 
+    // Authoritative reserve provenance (raw units are in base/quote_reserve).
+    /// True once an authoritative source (bonding-curve account or swap event)
+    /// has supplied reserves.
+    pub reserves_known: bool,
+    pub last_reserve_slot: u64,
+    pub last_reserve_timestamp: Option<i64>,
+    pub last_reserve_signature: Option<[u8; 64]>,
+
     // Instrumentation only (monotonic ns); excluded from equality.
     pub first_seen_ns: u128,
     pub last_update_ns: u128,
@@ -249,6 +269,10 @@ impl MarketState {
             last_trade_timestamp: None,
             last_fee_bps: None,
             volume: VolumeWindow::new(DEFAULT_VOLUME_BUCKETS),
+            reserves_known: false,
+            last_reserve_slot: 0,
+            last_reserve_timestamp: None,
+            last_reserve_signature: None,
             first_seen_ns: now_ns,
             last_update_ns: now_ns,
         }
@@ -282,11 +306,19 @@ impl MarketState {
         self.pool_base_token_account = d.pool_base_token_account.or(self.pool_base_token_account);
         self.pool_quote_token_account =
             d.pool_quote_token_account.or(self.pool_quote_token_account);
-        if let Some(v) = d.base_reserve {
-            self.base_reserve = v;
-        }
-        if let Some(v) = d.quote_reserve {
-            self.quote_reserve = v;
+        // Only sources that carry real reserves mark the state known.
+        if let (Some(b), Some(q)) = (d.base_reserve, d.quote_reserve) {
+            self.base_reserve = b;
+            self.quote_reserve = q;
+            self.reserves_known = true;
+            self.last_reserve_slot = self.last_reserve_slot.max(self.last_slot);
+        } else {
+            if let Some(v) = d.base_reserve {
+                self.base_reserve = v;
+            }
+            if let Some(v) = d.quote_reserve {
+                self.quote_reserve = v;
+            }
         }
         if let Some(v) = d.virtual_base_reserve {
             self.virtual_base_reserve = v;
@@ -321,6 +353,22 @@ impl MarketState {
         self.last_slot = self.last_slot.max(slot);
     }
 
+    /// Whether the current reserve state is fresh enough to quote from.
+    pub fn reserve_state(&self, current_slot: u64, stale_slots: u64) -> ReserveState {
+        if !self.reserves_known {
+            ReserveState::Unknown
+        } else if current_slot.saturating_sub(self.last_reserve_slot) > stale_slots {
+            ReserveState::Stale
+        } else {
+            ReserveState::Known
+        }
+    }
+
+    /// Convenience freshness predicate.
+    pub fn is_reserve_state_fresh(&self, current_slot: u64, stale_slots: u64) -> bool {
+        self.reserve_state(current_slot, stale_slots) == ReserveState::Known
+    }
+
     /// Seed identity/reserves from a `CreateEvent`.
     pub fn apply_create(&mut self, c: &CreatedMarket, now_ns: u128) {
         self.venue.get_or_insert(c.venue);
@@ -345,15 +393,29 @@ impl MarketState {
     }
 
     /// Apply a decoded swap. Returns `false` if it is an exact replay.
-    pub fn apply_swap(&mut self, s: &DecodedSwap, now_ns: u128) -> bool {
+    pub fn apply_swap(
+        &mut self,
+        s: &DecodedSwap,
+        signature: [u8; 64],
+        slot: u64,
+        now_ns: u128,
+    ) -> bool {
+        self.last_slot = self.last_slot.max(slot);
         self.venue.get_or_insert(s.venue);
         self.base_mint = s.base_mint.or(self.base_mint);
         self.quote_mint = s.quote_mint.or(self.quote_mint);
-        if let Some(v) = s.base_reserve {
-            self.base_reserve = u128::from(v);
-        }
-        if let Some(v) = s.quote_reserve {
-            self.quote_reserve = u128::from(v);
+
+        // Reserve freshness: an event supplies the latest observed pool
+        // reserves. An older event must never overwrite newer reserve state.
+        if let (Some(b), Some(q)) = (s.base_reserve, s.quote_reserve) {
+            if !self.reserves_known || slot >= self.last_reserve_slot {
+                self.base_reserve = u128::from(b);
+                self.quote_reserve = u128::from(q);
+                self.reserves_known = true;
+                self.last_reserve_slot = slot;
+                self.last_reserve_timestamp = s.timestamp;
+                self.last_reserve_signature = Some(signature);
+            }
         }
         if let Some(v) = s.virtual_quote_reserve {
             self.virtual_quote_reserve = v;
@@ -460,6 +522,10 @@ impl PartialEq for MarketState {
             && self.last_trade_timestamp == other.last_trade_timestamp
             && self.last_fee_bps == other.last_fee_bps
             && self.volume == other.volume
+            && self.reserves_known == other.reserves_known
+            && self.last_reserve_slot == other.last_reserve_slot
+            && self.last_reserve_timestamp == other.last_reserve_timestamp
+            && self.last_reserve_signature == other.last_reserve_signature
     }
 }
 

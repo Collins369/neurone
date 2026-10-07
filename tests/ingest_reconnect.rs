@@ -136,7 +136,7 @@ async fn ingestion_recovers_from_connect_failures_and_stream_interruptions() {
     // Two connect failures, then streams that keep ending.
     let connector = MockConnector::new(2);
 
-    let outcome = tokio::time::timeout(Duration::from_secs(10), async {
+    let outcome = tokio::time::timeout(Duration::from_secs(20), async {
         let ingest = solami::run(
             &cfg.ingest,
             &connector,

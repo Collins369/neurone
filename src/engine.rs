@@ -24,6 +24,7 @@ use crate::shutdown::Shutdown;
 use crate::telemetry::Metrics;
 
 /// Routing handle + owned shard tasks.
+#[derive(Clone)]
 pub struct Engine {
     senders: Vec<mpsc::Sender<ShardMsg>>,
     num_shards: usize,

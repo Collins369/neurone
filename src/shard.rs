@@ -185,8 +185,7 @@ impl Shard {
                         // Swaps: reserve/volume updates on the owning market.
                         for swap in &t.swaps {
                             let market = self.market_mut(swap.market_key, now);
-                            market.note_slot(t.slot);
-                            market.apply_swap(swap, now);
+                            market.apply_swap(swap, t.signature, t.slot, now);
                             self.metrics.incr_decoded();
                             self.metrics.incr_volume_update();
                             self.metrics.incr_swap(swap.venue);
