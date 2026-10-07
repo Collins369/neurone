@@ -1,197 +1,278 @@
-# NEURONE — M2.2B FINAL PROTOCOL PARITY INVESTIGATION
+# Task: Pump.fun + PumpSwap Documentation-First Reconciliation Investigation
 
-## Mission
-Investigation only. No production quote/state changes. No M3.
+## Objective
 
-This is the final parity pass before implementation or explicit exclusions.
+Run a fresh, thorough investigation of **Pump.fun** and **PumpSwap**, in this order:
 
-Investigate ONLY:
-1. PumpSwap `(20,5)` SELL residual.
-2. PumpSwap BUY semantics for `(2,93)` and `(20,5)`.
-3. PumpSwap fee/version/creator-fee differences.
-4. Pump.fun BUY certification for `buy_exact_sol_in`, `buy_exact_quote_in`, and token-target `buy`.
-5. Whether every production-required field is obtainable from Yellowstone-observed state without hot-path RPC.
+1. Thoroughly search and study the **official Pump.fun and PumpSwap documentation/source material first**.
+2. Run a **new empirical/code/data investigation** of Pump.fun and PumpSwap.
+3. Make a **technical reconciliation** between the documentation findings and the fresh investigation findings.
 
-## Read first
-- `NEURONE_BLUEPRINT.md`
-- `docs/MILESTONE_2_REPORT.md`
-- `docs/MILESTONE_2_1_REPORT.md`
-- `docs/MILESTONE_2_2_INVESTIGATION_REPORT.md`
-- `docs/MILESTONE_2_2A_PROTOCOL_PARITY_REPORT.md`
-- relevant Neo Agent skills under `/home/xion/neo-agent`
+This is **not an executive summary**. The deliverable must be a technical reconciliation based directly on the documentation research and the new investigation.
 
-Use current authoritative Pump docs/IDLs and real mainnet data. Third-party sources may only generate hypotheses.
+Do not jump into implementation or modify production quote/state logic.
 
-## Already established — do not reopen unnecessarily
+## Scope
 
-### pump.fun
-- TradeEvent reserves are post-trade.
-- Account-grounded pre-trade reconstruction works.
-- SELL formula is exact on the account-grounded sample.
-- BUY is instruction-specific.
-- Exact-in BUY shows the `input - 1` rule.
-- Token-target BUY is an inverse/token-target calculation.
-- Fees are not simply netted from the curve input as M2.1 modeled.
+Focus on:
+- exact BUY/SELL quote formulas
+- reserve semantics
+- virtual reserves / effective reserves
+- fee calculation and fee regimes
+- protocol fees and creator fees
+- input/output semantics
+- integer rounding (`floor`, `ceil`, adjustments)
+- `-1` / `+1` terms
+- Pump.fun bonding-curve state
+- PumpSwap AMM pool state
+- event fields and historical-state reconstruction
+- versioned/extended account layouts
+- historical versus current protocol behavior
+- what Yellowstone can and cannot reconstruct deterministically
+
+Stay tightly focused on these questions.
+
+# Part 1 — Documentation-First Research
+
+Before the new investigation, thoroughly search the **official first-party sources** for both protocols.
+
+### Pump.fun
+Prioritize:
+- official Pump program repository/documentation
+- official IDL
+- official instruction docs
+- official SDK/source where formulas or fee behavior are defined
+- official account/state definitions
+- official event definitions
+- official breaking-change/version documentation
 
 ### PumpSwap
-- Event reserves are pre-trade.
-- Pool reserve fields match pool token-account pre-transaction balances in tested samples.
-- Effective quote reserve is `raw_quote + signed virtual_quote_reserves`.
-- Pool layouts are versioned by account length.
-- SELL `(2,93)` and `(25,5)` are exact.
-- `(20,5)` SELL remains unresolved.
-- `(25,5)` BUY is mostly exact.
-- `(2,93)` and `(20,5)` BUY remain unresolved.
-- Fee state must be per-market and observed, not a caller constant.
+Prioritize:
+- official PumpSwap repository/documentation
+- official IDL
+- official instruction docs
+- official SDK/source
+- official account/state definitions
+- official event definitions
+- official fee documentation
+- official documentation on virtual quote reserves and pool versions
 
-## PumpSwap final investigation
+Use current official sources and historical/older layout documentation where relevant.
 
-### A. `(20,5)` SELL
-Start from:
-`gross_quote_out = floor(q_eff * base_in / (base_reserve + base_in))`
+## Documentation extraction requirements
 
-where:
-`q_eff = raw_quote + virtual_quote_reserves`
+For every important finding, record:
+- source/file/document
+- relevant instruction/account/event
+- exact field names
+- exact formula where documented
+- fee parameters
+- rounding direction
+- state semantics
+- whether it is current-only or explains historical layouts
+- explicit versioning/backwards-compatibility behavior
 
-Investigate the ~920,619 residual found in M2.2A across multiple independent `(20,5)` pools.
+Do not paraphrase away important mathematical details.
 
-Test systematically:
-- raw/effective base and quote reserves
-- Pool vs event virtual reserves
-- appended/version-specific Pool fields
-- creator-fee state
-- fee amounts and rounding
-- instruction arguments
-- transaction account ordering
-- program/config/version regime
-- trade-size dependence of the residual
-- any additional virtual-base or reserve adjustment
+If an official source explicitly gives a formula, preserve it closely enough to compare against the empirical investigation.
 
-Target >=20 independent `(20,5)` pools and >=10 consecutive swaps per selected pool where feasible.
+If official sources conflict across versions, record the conflict rather than silently choosing one.
 
-### B. PumpSwap BUY
-Partition by `(25,5)`, `(2,93)`, `(20,5)`, Pool version/length, and creator-fee state.
+# Part 2 — Fresh Investigation
 
-Test:
-- `user_quote_amount_in`
-- `user_quote_amount_in - 1`
-- `quote_amount_in`
-- `quote_amount_in - lp_fee - protocol_fee`
-- fee-adjusted user input
-- instruction-specific amounts
-- rounding variants
-- any version-specific rule
+After the documentation pass, run a fresh investigation of the existing Pump.fun and PumpSwap evidence/code/data.
 
-Acceptance is exact integer equality, not ppm closeness.
+Re-run or reproduce the relevant investigation rather than relying only on the previous report.
 
-If regimes genuinely differ, model them as separate supported regimes rather than forcing one formula.
+## Pump.fun
 
-### C. Fee/config/version analysis
-Determine whether observed `(2,93)` and `(25,5)` are historical configs, per-pool state, event-calculation values, migration/version artifacts, creator-fee-inclusive values, or another mechanism.
+### SELL
+Investigate:
+- reserve interpretation
+- exact token → SOL calculation
+- fee treatment
+- rounding
+- creator fee treatment
+- protocol fee treatment
+- whether the observed formula exactly reproduces TradeEvent/post-trade values
 
-Do not replace observed event fee state with current GlobalConfig merely because current docs say 20/5.
-
-## Pump.fun BUY certification
-
-Use account-grounded pre-trade state.
-
-For each:
+### BUY
+Investigate each instruction separately:
 - `buy_exact_sol_in`
 - `buy_exact_quote_in`
 - token-target `buy`
 
-collect a large, diverse sample; target >=1000 per instruction if realistically obtainable.
+For each determine:
+- exact input/output semantics
+- formula
+- fee base
+- rounding
+- `-1` / `+1` adjustments
+- predicted vs observed output
+- exact matches vs mismatches
 
-Verify exact formulas and rounding. Include SOL and non-SOL quote cases where applicable.
+Do not combine the three BUY variants unless the evidence proves equivalence.
 
-Test boundaries:
-- 1-lamport input
-- 2-lamport input
-- dust
-- near-reserve
-- near-completion
-- zero/one output
-- overflow boundaries
-- real-token-reserve limits
+## PumpSwap
 
-Do not invent the mechanism behind `-1`; distinguish verified behavior from inference.
-
-## Yellowstone observability requirement
-
-For every field needed by the final production quote, prove it is obtainable from Yellowstone-observed account/transaction/event state without RPC polling on the hot path.
-
-Produce:
-| Required field | Yellowstone source | Update event | Hot-path required? | RPC required? |
-
-If a required field cannot be obtained deterministically from Yellowstone, mark that regime unsupported unless a safe alternative exists.
-
-## Differential evidence
-
-For every candidate formula record:
-- observed
-- predicted
-- signed error
-- absolute/relative error
-- exact/non-exact
-- regime
-- Pool length/version
+### SELL
+Investigate:
+- raw base reserve
+- raw quote reserve
+- `virtual_quote_reserves`
+- effective quote reserve
 - fee regime
-- signature
-- slot
+- creator/protocol fees where applicable
+- exact rounding
+- event-state vs account-state reconstruction
+- historical pool layouts/version lengths
 
-EXACT means integer equality.
+### BUY
+Investigate:
+- exact input semantics
+- reserve semantics
+- effective quote reserve
+- fee calculation
+- fee regimes
+- rounding
+- event fields
+- whether exact historical state is observable
 
-Use `u128`/`i128` safely.
+Independently investigate the observed regimes:
+- `(25,5)`
+- `(2,93)`
+- `(20,5)`
 
-Evidence labels:
-`VERIFIED`, `OBSERVED`, `INFERRED`, `HYPOTHESIS`, `UNRESOLVED`.
+Do not assume these are the same protocol configuration merely because they are pairs of fee numbers.
 
-Never promote a hypothesis to VERIFIED because it fits a sample.
+# Part 3 — Documentation ↔ Investigation Reconciliation
 
-## Hard stop
+For every major question explicitly compare:
 
-PumpSwap is CLOSED only if reserves, effective reserves, supported fee regimes, SELL, BUY, version differences, and Yellowstone-required state are proven.
+**A. What the official documentation says**
 
-pump.fun BUY is CLOSED only if supported instructions have exact formulas, sufficient diverse account-grounded evidence, boundary/rounding tests, and Yellowstone-observable required state.
+vs.
 
-If a regime cannot be proven, STOP investigating it indefinitely. Instead define an exact deterministic exclusion:
-`venue + instruction + version/fee regime + missing state`.
+**B. What the fresh investigation observes**
 
-## No production implementation
+vs.
 
-Do not modify:
-- `src/quote.rs`
-- `src/market.rs`
-- production decode/state logic
-- execution logic
-- M3 qualification
+**C. Whether they agree**
 
-Research scripts are allowed. Do not weaken existing tests to force success.
+Use classifications such as:
+- `CONFIRMED — docs and investigation agree`
+- `DOCS EXPLAIN INVESTIGATION — previous uncertainty resolved`
+- `INVESTIGATION SUPPORTS DOCS BUT STATE DEPENDENCY REMAINS`
+- `DOCS AND INVESTIGATION DISAGREE`
+- `DOCUMENTATION INSUFFICIENT`
+- `INVESTIGATION INSUFFICIENT`
+- `HISTORICAL STATE NOT RECONSTRUCTABLE FROM OBSERVED DATA`
+- `FORMULA KNOWN, REQUIRED INPUT STATE UNKNOWN`
 
-## Final report
+Do not force reconciliation where evidence does not support one.
 
-Write:
-`docs/MILESTONE_2_2B_FINAL_PROTOCOL_PARITY_REPORT.md`
+# Specific Reconciliation Questions
 
-Include:
-1. Executive conclusion
-2. Pump.fun BUY certification
-3. PumpSwap `(20,5)` SELL
-4. PumpSwap BUY
-5. Fee/version analysis
-6. Yellowstone observability
-7. Exact formula table
-8. Exact parity statistics
-9. Remaining unresolved items
-10. Supported vs unsupported regimes
-11. Final production recommendation
-12. Representative signatures/slots
+## Pump.fun
 
-End with exactly one:
-`PROTOCOL PARITY CLOSED`
-or
-`PROTOCOL PARITY CLOSED WITH EXCLUSIONS`
-or
-`PROTOCOL PARITY NOT CLOSED — SPECIFIC BLOCKER REMAINS`
+1. Are the observed `-1` / `+1` terms actually documented by first-party sources?
+2. Which exact BUY instruction uses which formula?
+3. Are `buy_exact_sol_in` and `buy_exact_quote_in` modeled with the correct fee-adjusted input?
+4. Is token-target `buy` genuinely unresolved, or does official documentation explain the previous mismatch?
+5. Are creator/protocol fees applied to the correct base?
+6. Are mismatches caused by wrong formula, wrong fee state, wrong reserve state, wrong rounding, wrong instruction semantics, or missing historical state?
+7. Does current official documentation/implementation explain the empirical match rates previously observed?
 
-This is the final investigation pass. Do not broaden scope or start another research phase. The output must definitively state what quote math Neurone can trust from Yellowstone state and what it must refuse to trade.
+## PumpSwap
+
+1. Does official documentation define effective quote reserves as raw quote reserve plus signed `virtual_quote_reserves`?
+2. Does it state whether BUY and SELL both use effective quote reserves?
+3. Are `virtual_quote_reserves` exposed in pool state and/or trade events?
+4. If exposed in events, does that resolve the previous conclusion that historical virtual/adjustment state was unavailable?
+5. What exactly explains the `(20,5)` residual and observed ±1 differences?
+6. Are `(25,5)`, `(2,93)`, and `(20,5)` different fee configurations, historical states, or something else?
+7. Does official documentation explain PumpSwap BUY sufficiently to determine the exact formula?
+8. If PumpSwap BUY remains unresolved, identify the exact missing variable/state instead of simply labeling the whole BUY path unknown.
+9. Can the exact historical trade be reconstructed from Yellowstone alone for each supported path?
+
+# Required Output
+
+Produce a technical reconciliation report, not an executive summary.
+
+Recommended structure:
+
+## 1. Documentation Findings
+### Pump.fun
+### PumpSwap
+
+## 2. Fresh Investigation Findings
+### Pump.fun SELL
+### Pump.fun BUY
+- buy_exact_sol_in
+- buy_exact_quote_in
+- buy
+### PumpSwap SELL
+### PumpSwap BUY
+
+## 3. Documentation ↔ Investigation Reconciliation
+Use a table where useful:
+
+| Topic | Official documentation | Fresh investigation | Reconciliation | Status |
+|---|---|---|---|---|
+
+Do not compress the table so much that mathematical details disappear.
+
+## 4. Resolved Questions
+
+List exactly what the new work resolves compared with the previous investigation.
+
+## 5. Remaining Contradictions / Unknowns
+
+For every unresolved issue state:
+- what is known
+- what is unknown
+- what evidence was checked
+- what exact missing state/information prevents closure
+
+## 6. Protocol-Parity Consequences
+
+Only state consequences directly supported by the reconciliation.
+
+Distinguish:
+- exact and production-certifiable
+- exact only under observable-state conditions
+- empirically matching but not formally documented
+- not certifiable
+
+## 7. Source Register
+
+List the official Pump.fun and PumpSwap sources actually inspected, including repository/file/document names and relevant sections/fields.
+
+# Important Rules
+
+1. **Documentation first.** Do not begin by reading only the old investigation and then searching for docs that fit it.
+2. Use first-party sources wherever possible.
+3. Third-party sources are supplementary only and must be clearly labeled.
+4. Do not treat an SDK implementation as authoritative merely because it matches observed data; distinguish implementation evidence from formal protocol documentation.
+5. Do not silently overwrite or reinterpret previous findings.
+6. If new evidence changes a previous conclusion, explicitly explain why.
+7. Preserve exact formulas and integer arithmetic.
+8. Do not use floating-point approximations for protocol formulas.
+9. Separate current protocol behavior from historical behavior.
+10. Separate observable state from inferred state.
+11. Do not turn an unresolved issue into a speculative explanation.
+12. Do not make production code changes as part of this task unless needed to reproduce an investigation; isolate and identify any such changes.
+13. Do not produce an executive summary as the primary deliverable.
+14. Make the report detailed enough that another engineer can trace each reconciliation claim back to both official documentation and fresh empirical evidence.
+
+## Final Deliverable
+
+Write the completed report to:
+
+`task.md`
+
+If the repository already has a suitable investigation/report directory, use it only if consistent with the existing project structure; otherwise use the requested `task.md` location.
+
+Do not stop after documentation research. The task is complete only after:
+
+**official docs → fresh investigation → reconciliation → task.md**
