@@ -20,6 +20,7 @@ use neurone::telemetry::Metrics;
 
 fn token_present() -> bool {
     std::env::var("SOLAMI_GRPC_TOKEN")
+        .or_else(|_| std::env::var("SOLAMI_GRPC_API_KEY"))
         .or_else(|_| std::env::var("SOLAMI_API_KEY"))
         .map(|t| !t.trim().is_empty())
         .unwrap_or(false)

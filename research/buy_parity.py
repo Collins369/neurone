@@ -18,10 +18,10 @@ import sys
 import time
 import urllib.request
 
-KEY = os.environ.get("SOLAMI_API_KEY", "")
+KEY = os.environ.get("SOLAMI_RPC_API_KEY") or os.environ.get("SOLAMI_API_KEY", "")
 if not KEY:
     for line in open(os.path.join(os.path.dirname(__file__), "..", ".env")):
-        if line.startswith("SOLAMI_API_KEY="):
+        if line.startswith(("SOLAMI_RPC_API_KEY=", "SOLAMI_API_KEY=")):
             KEY = line.split("=", 1)[1].strip()
 URL = f"https://rpc.solami.dev/sol?api_key={KEY}"
 

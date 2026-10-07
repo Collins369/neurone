@@ -267,6 +267,7 @@ impl Config {
             self.ingest.source = parse_source(&v)?;
         }
         if let Ok(v) = std::env::var("SOLAMI_GRPC_ENDPOINT")
+            .or_else(|_| std::env::var("SOLAMI_GRPC_YELLOWSTONE_ENDPOINT"))
             .or_else(|_| std::env::var("SOLAMI_YELLOWSTONE_ENDPOINT"))
         {
             if !v.trim().is_empty() {
@@ -360,6 +361,7 @@ impl Config {
             return Ok(None);
         }
         let token = std::env::var("SOLAMI_GRPC_TOKEN")
+            .or_else(|_| std::env::var("SOLAMI_GRPC_API_KEY"))
             .or_else(|_| std::env::var("SOLAMI_API_KEY"))
             .ok()
             .filter(|t| !t.trim().is_empty());

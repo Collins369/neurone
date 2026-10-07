@@ -1,516 +1,197 @@
-# Neurone — M2.2A Protocol Parity Closure
-## Finish the BUY/SELL protocol investigation, then STOP
-
-### Role
-You are DeepSeek/Codex operating inside the Neurone repository.
-
-This task is the **final investigation/closure pass for M2.2**.
-
-We have already investigated the remaining quote-parity problems. Your job now is to finish the evidence needed to close the protocol layer.
-
-**Do not implement the production fix in this task.**
-
-There are exactly two objectives:
-
-1. Confirm pump.fun BUY parity at a sufficiently large sample.
-2. Resolve pump.swap reserve semantics, effective reserves, fee regimes, and exact BUY/SELL parity.
-
-Once the acceptance criteria are satisfied — or a clearly documented protocol limitation makes them impossible — produce the final report and STOP.
-
-Do not start M3.
-
----
-
-# 1. Source of truth
-
-Before working:
-
-1. Read `NEURONE_BLUEPRINT.md`.
-2. Read:
-   - `docs/MILESTONE_1_REPORT.md`
-   - `docs/MILESTONE_2_REPORT.md`
-   - `docs/MILESTONE_2_1_REPORT.md`
-   - `docs/MILESTONE_2_2_INVESTIGATION_REPORT.md`
-3. Inspect:
-   - `src/quote.rs`
-   - `src/market.rs`
-   - `src/shard.rs`
-   - protocol decoders
-   - existing parity tests
-   - existing research tooling
-4. Inspect `/home/xion/neo-agent` and use the relevant protocol-research, architecture, adversarial-test, and quality-gate skills.
-5. Consult current authoritative Pump documentation/IDL/reference sources where required.
-6. Use real mainnet data through the existing Solami/RPC research path.
-
-Do not modify `NEURONE_BLUEPRINT.md`.
-Do not rewrite historical reports.
-
----
-
-# 2. What M2.2 already established
-
-## pump.fun
-
-M2.1 incorrectly treated BUY as one generic operation.
-
-M2.2 identified three BUY instruction types:
-
-- `buy_exact_sol_in`
-- `buy_exact_quote_in`
-- `buy`
-
-Observed candidate behavior:
-
-```text
-Exact-in:
-tokens_out = floor(virtual_token_reserves * (input - 1) /
-                   (virtual_sol_reserves + input - 1))
-
-Token-target buy:
-sol_required = ceil(virtual_sol_reserves * token_target /
-                    (virtual_token_reserves - token_target))
-```
-
-Observed:
-- `buy_exact_sol_in`: 20/20 exact
-- `buy_exact_quote_in`: 30/32 exact
-- `buy`: 50/54 exact
-
-The `-1` behavior is observed and appears to be real protocol behavior, but the sample is not sufficient to certify 100% parity.
-
-## pump.swap
-
-M2.2 found the M2.1 model was too simplistic:
-
-- M2.1's "exact SELL" claim was based on only 2 samples.
-- Over 646 real sells, the simple formula was exact only 405/646.
-- Some pools showed `lp_bps=2`, `protocol_bps=93`, versus older/documented `20/5`.
-- Residuals can be much larger than ordinary rounding.
-- `virtual_quote_reserves` is a likely component of effective quote reserves.
-- A sampled Pool account was 260 bytes while the published layout appeared different.
-- BUY candidate grid had 0/242 exact.
-
-PumpSwap therefore remains unresolved.
-
----
-
-# 3. Objective A — close pump.fun parity
-
-Do not change production quote code.
-
-Use research tooling/fixtures to establish whether the proposed formulas are actually protocol-exact.
-
-## Required sample
-
-Collect, where available:
-
-- at least **1,000 `buy_exact_sol_in`** events;
-- at least **1,000 `buy_exact_quote_in`** events;
-- at least **1,000 `buy`** events.
-
-If one instruction cannot realistically reach 1,000 samples, state the actual available population and why.
-
-Partition samples by useful dimensions:
-
-- trade size;
-- curve state;
-- market age;
-- fee regime;
-- completion state;
-- quote mint;
-- bonding-curve boundary;
-- unusual reserve values.
-
-Use correct pre-trade state reconstruction. M2.2 observed that TradeEvents represent post-trade state, so do not use post-trade reserves as pre-trade inputs.
-
-## Test
-
-For each instruction calculate:
-
-- exact matches;
-- mismatches;
-- maximum absolute error;
-- relative error;
-- residual direction;
-- residual distribution.
-
-Acceptance:
-
-> **100% exact integer parity across the validated labelled sample.**
-
-If not 100%, determine whether the mismatch is formula, reserve reconstruction, fee handling, instruction semantics, protocol version, data quality, or another identifiable cause.
-
-Do not call a formula exact if it is not exact.
-
-## Boundary tests
-
-Explicitly test:
-
-- very small buys;
-- large buys;
-- near-completion bonding curves;
-- unusual virtual reserves;
-- real-token-reserve boundary;
-- zero/near-zero remaining token supply;
-- non-SOL quote markets where applicable.
-
-Determine whether the real-token-reserve cap ever affects observed BUY behavior.
-
----
-
-# 4. Objective B — close pump.swap parity
-
-This is the main unresolved investigation.
-
-Do not guess the formula.
-
-## B1. Resolve Pool layout/version
-
-Investigate the observed 260-byte Pool account versus the currently published layout.
-
-Determine:
-
-- exact discriminator/header size;
-- exact field offsets;
-- exact field sizes;
-- which fields exist in the sampled 260-byte account;
-- whether this is an older Pool version;
-- whether fields were appended in newer versions;
-- whether Neurone needs version-aware decoding.
-
-Produce a clear layout table.
-
-Do not silently reinterpret bytes.
-
-## B2. Resolve reserve semantics
-
-Collect **dense consecutive event chains per pool**.
-
-Target:
-
-> at least **200 pools × 10 or more consecutive BUY/SELL events**, where data availability permits.
-
-For each chain determine whether event reserve fields are pre-trade, post-trade, or another defined state.
-
-Use consecutive state transitions, not sparse unrelated transactions.
-
-For every transition verify, where protocol semantics permit:
-
-```text
-state_before + trade_delta = state_after
-```
-
-If the event contains post-trade reserves, reconstruct pre-trade reserves from the immediately preceding state.
-
-Document this precisely.
-
-## B3. Resolve virtual quote reserves
-
-Investigate the official `NEGATIVE_VIRTUAL_QUOTE_RESERVES` behavior and how it affects effective quote reserves.
-
-For each pool determine:
-
-```text
-raw quote reserve
-virtual quote reserve
-effective quote reserve
-```
-
-Verify whether the effective reserve is `raw + virtual` or another protocol-defined transformation.
-
-Preserve signed `i128` semantics. Do not clamp negative virtual reserves to zero.
-
-Treat the virtual-reserve hypothesis as a hypothesis until differential data proves it.
-
-## B4. Resolve PumpSwap fee regimes
-
-Determine why pools may expose different fee values.
-
-Investigate:
-
-- LP fee;
-- protocol fee;
-- creator/dynamic fee if applicable;
-- fee configuration accounts;
-- instruction-specific fees;
-- pool-specific fees;
-- version-specific fee behavior.
-
-For sampled pools record:
-
-```text
-pool
-program/version if known
-lp_bps
-protocol_bps
-other fee fields
-slot
-source/provenance
-```
-
-Determine which fee values are authoritative for a quote.
-
-Do not assume older documented `20/5` values are universal.
-
-## B5. Derive PumpSwap SELL formula
-
-Before BUY, establish SELL correctly.
-
-Test candidate formulas using:
-
-- correct pre-trade reserves;
-- effective reserves;
-- correct fee regime;
-- correct rounding;
-- exact integer arithmetic.
-
-Goal:
-
-> **100% exact parity across the validated labelled SELL sample.**
-
-Do not preserve the M2.1 "exact" claim unless the larger sample supports it.
-
-If multiple pool versions require different formulas, identify the version discriminator.
-
-## B6. Derive PumpSwap BUY formula
-
-Only after B1–B5 are understood.
-
-Test candidates including, where applicable:
-
-- fee-before-constant-product;
-- fee-after-constant-product;
-- LP/protocol fee split;
-- effective quote reserves;
-- reserve + input;
-- reserve + net input;
-- floor vs ceil;
-- protocol-specific unit adjustments;
-- pre-trade vs post-trade reserve interpretation.
-
-Do not assume pump.fun BUY math applies to PumpSwap.
-
-Use real labelled BUY events.
-
-Acceptance:
-
-> **100% exact integer parity across the validated labelled BUY sample.**
-
-If a candidate fails, analyze the residual rather than lowering the acceptance standard.
-
----
-
-# 5. Differential parity harness
-
-Use or extend the existing research harness.
-
-It must report, by venue/instruction/side:
-
-- sample count;
-- exact matches;
-- mismatch count;
-- maximum absolute error;
-- maximum relative error;
-- mean/median error where useful;
-- residual direction;
-- candidate formula;
-- fee regime;
-- reserve model;
-- pool/version.
-
-The final report must distinguish:
-
-```text
-100% exact
-```
-
-from:
-
-```text
-<1 ppm
-```
-
-or:
-
-```text
-very close
-```
-
----
-
-# 6. Fee-state conclusion
-
-Determine the minimum authoritative fee state production `MarketState` must eventually contain.
-
-M2.2 proposed:
-
-```text
-lp_bps
-protocol_bps
-creator_bps
-fee_slot
-fee_signature
-```
-
-Confirm, reject, or refine this proposal based on evidence.
-
-Determine whether fee state should be directly observed from events, decoded from configuration accounts, derived from both, or be version-specific.
-
-Do not implement this production change yet.
-
----
-
-# 7. Final production contract
-
-At the end define the minimum information required for an authoritative quote.
-
-Intended shape:
-
-```text
-Yellowstone
-    ↓
-Event Normalizer
-    ↓
-Parallel Shards
-    ↓
-MarketState
-    ↓
-Protocol-aware Quote Engine
-    ↓
-Executable?
-```
-
-Protocol layer must remain:
-
-- O(1) quote calculation;
-- integer-only;
-- allocation-free on hot path;
-- no global lock;
-- no serial market scan;
-- no per-market RPC polling;
-- no blocking network operation in quote path;
-- no LLM;
-- no strategy logic.
-
----
-
-# 8. Hard stop conditions
-
-STOP investigation when BOTH are true:
+# NEURONE — M2.2B FINAL PROTOCOL PARITY INVESTIGATION
+
+## Mission
+Investigation only. No production quote/state changes. No M3.
+
+This is the final parity pass before implementation or explicit exclusions.
+
+Investigate ONLY:
+1. PumpSwap `(20,5)` SELL residual.
+2. PumpSwap BUY semantics for `(2,93)` and `(20,5)`.
+3. PumpSwap fee/version/creator-fee differences.
+4. Pump.fun BUY certification for `buy_exact_sol_in`, `buy_exact_quote_in`, and token-target `buy`.
+5. Whether every production-required field is obtainable from Yellowstone-observed state without hot-path RPC.
+
+## Read first
+- `NEURONE_BLUEPRINT.md`
+- `docs/MILESTONE_2_REPORT.md`
+- `docs/MILESTONE_2_1_REPORT.md`
+- `docs/MILESTONE_2_2_INVESTIGATION_REPORT.md`
+- `docs/MILESTONE_2_2A_PROTOCOL_PARITY_REPORT.md`
+- relevant Neo Agent skills under `/home/xion/neo-agent`
+
+Use current authoritative Pump docs/IDLs and real mainnet data. Third-party sources may only generate hypotheses.
+
+## Already established — do not reopen unnecessarily
 
 ### pump.fun
-Instruction-aware formulas have been validated against the largest defensible labelled dataset, preferably ≥1,000 samples per instruction, with exact integer parity.
+- TradeEvent reserves are post-trade.
+- Account-grounded pre-trade reconstruction works.
+- SELL formula is exact on the account-grounded sample.
+- BUY is instruction-specific.
+- Exact-in BUY shows the `input - 1` rule.
+- Token-target BUY is an inverse/token-target calculation.
+- Fees are not simply netted from the curve input as M2.1 modeled.
 
-### pump.swap
-Pool layout/version, reserve semantics, effective reserves, fee regime, and BUY/SELL formulas have been resolved sufficiently to achieve exact parity on the validated labelled dataset.
+### PumpSwap
+- Event reserves are pre-trade.
+- Pool reserve fields match pool token-account pre-transaction balances in tested samples.
+- Effective quote reserve is `raw_quote + signed virtual_quote_reserves`.
+- Pool layouts are versioned by account length.
+- SELL `(2,93)` and `(25,5)` are exact.
+- `(20,5)` SELL remains unresolved.
+- `(25,5)` BUY is mostly exact.
+- `(2,93)` and `(20,5)` BUY remain unresolved.
+- Fee state must be per-market and observed, not a caller constant.
 
-If exact parity is impossible because the deployed protocol exposes insufficient information, document the precise blocker.
+## PumpSwap final investigation
 
-Do NOT investigate indefinitely.
+### A. `(20,5)` SELL
+Start from:
+`gross_quote_out = floor(q_eff * base_in / (base_reserve + base_in))`
 
-A clear protocol limitation is a valid conclusion.
+where:
+`q_eff = raw_quote + virtual_quote_reserves`
 
----
+Investigate the ~920,619 residual found in M2.2A across multiple independent `(20,5)` pools.
 
-# 9. No production implementation
+Test systematically:
+- raw/effective base and quote reserves
+- Pool vs event virtual reserves
+- appended/version-specific Pool fields
+- creator-fee state
+- fee amounts and rounding
+- instruction arguments
+- transaction account ordering
+- program/config/version regime
+- trade-size dependence of the residual
+- any additional virtual-base or reserve adjustment
 
-Allowed:
-- research scripts;
-- temporary analysis;
-- fixture collection;
-- parity harnesses;
-- temporary decoder experiments;
-- deterministic research tests.
+Target >=20 independent `(20,5)` pools and >=10 consecutive swaps per selected pool where feasible.
 
-Do NOT implement:
-- production quote changes;
-- production MarketState changes;
-- M3 filters;
-- qualification;
-- arming;
-- capital arbitration;
-- trading;
-- transaction construction;
-- signing;
-- Beam;
-- TP/SL;
-- frontend.
+### B. PumpSwap BUY
+Partition by `(25,5)`, `(2,93)`, `(20,5)`, Pool version/length, and creator-fee state.
 
-Do not modify `NEURONE_BLUEPRINT.md`.
-Do not rewrite previous milestone reports.
+Test:
+- `user_quote_amount_in`
+- `user_quote_amount_in - 1`
+- `quote_amount_in`
+- `quote_amount_in - lp_fee - protocol_fee`
+- fee-adjusted user input
+- instruction-specific amounts
+- rounding variants
+- any version-specific rule
 
----
+Acceptance is exact integer equality, not ppm closeness.
 
-# 10. Final report
+If regimes genuinely differ, model them as separate supported regimes rather than forcing one formula.
 
-Create:
+### C. Fee/config/version analysis
+Determine whether observed `(2,93)` and `(25,5)` are historical configs, per-pool state, event-calculation values, migration/version artifacts, creator-fee-inclusive values, or another mechanism.
 
-`docs/MILESTONE_2_2A_PROTOCOL_PARITY_REPORT.md`
+Do not replace observed event fee state with current GlobalConfig merely because current docs say 20/5.
 
-Required sections:
+## Pump.fun BUY certification
 
+Use account-grounded pre-trade state.
+
+For each:
+- `buy_exact_sol_in`
+- `buy_exact_quote_in`
+- token-target `buy`
+
+collect a large, diverse sample; target >=1000 per instruction if realistically obtainable.
+
+Verify exact formulas and rounding. Include SOL and non-SOL quote cases where applicable.
+
+Test boundaries:
+- 1-lamport input
+- 2-lamport input
+- dust
+- near-reserve
+- near-completion
+- zero/one output
+- overflow boundaries
+- real-token-reserve limits
+
+Do not invent the mechanism behind `-1`; distinguish verified behavior from inference.
+
+## Yellowstone observability requirement
+
+For every field needed by the final production quote, prove it is obtainable from Yellowstone-observed account/transaction/event state without RPC polling on the hot path.
+
+Produce:
+| Required field | Yellowstone source | Update event | Hot-path required? | RPC required? |
+
+If a required field cannot be obtained deterministically from Yellowstone, mark that regime unsupported unless a safe alternative exists.
+
+## Differential evidence
+
+For every candidate formula record:
+- observed
+- predicted
+- signed error
+- absolute/relative error
+- exact/non-exact
+- regime
+- Pool length/version
+- fee regime
+- signature
+- slot
+
+EXACT means integer equality.
+
+Use `u128`/`i128` safely.
+
+Evidence labels:
+`VERIFIED`, `OBSERVED`, `INFERRED`, `HYPOTHESIS`, `UNRESOLVED`.
+
+Never promote a hypothesis to VERIFIED because it fits a sample.
+
+## Hard stop
+
+PumpSwap is CLOSED only if reserves, effective reserves, supported fee regimes, SELL, BUY, version differences, and Yellowstone-required state are proven.
+
+pump.fun BUY is CLOSED only if supported instructions have exact formulas, sufficient diverse account-grounded evidence, boundary/rounding tests, and Yellowstone-observable required state.
+
+If a regime cannot be proven, STOP investigating it indefinitely. Instead define an exact deterministic exclusion:
+`venue + instruction + version/fee regime + missing state`.
+
+## No production implementation
+
+Do not modify:
+- `src/quote.rs`
+- `src/market.rs`
+- production decode/state logic
+- execution logic
+- M3 qualification
+
+Research scripts are allowed. Do not weaken existing tests to force success.
+
+## Final report
+
+Write:
+`docs/MILESTONE_2_2B_FINAL_PROTOCOL_PARITY_REPORT.md`
+
+Include:
 1. Executive conclusion
-2. Pump.fun confirmation
-3. PumpSwap Pool layout/version
-4. PumpSwap reserve semantics
-5. PumpSwap virtual reserves
-6. PumpSwap fee regimes
-7. PumpSwap SELL parity
-8. PumpSwap BUY parity
-9. Candidate formulas and rejection reasons
-10. Differential parity statistics
-11. Authoritative fee-state model
-12. Final quote-state contract
-13. Exact production changes required
-14. Risks/unresolved items
-15. Final recommendation
+2. Pump.fun BUY certification
+3. PumpSwap `(20,5)` SELL
+4. PumpSwap BUY
+5. Fee/version analysis
+6. Yellowstone observability
+7. Exact formula table
+8. Exact parity statistics
+9. Remaining unresolved items
+10. Supported vs unsupported regimes
+11. Final production recommendation
+12. Representative signatures/slots
 
-Use explicit labels:
-- `VERIFIED`
-- `OBSERVED`
-- `INFERRED`
-- `HYPOTHESIS`
-- `UNRESOLVED`
+End with exactly one:
+`PROTOCOL PARITY CLOSED`
+or
+`PROTOCOL PARITY CLOSED WITH EXCLUSIONS`
+or
+`PROTOCOL PARITY NOT CLOSED — SPECIFIC BLOCKER REMAINS`
 
-Do not turn hypotheses into facts.
-
----
-
-# 11. Git and cleanup
-
-At completion:
-
-1. Run relevant research tests.
-2. Run formatting/linting where applicable.
-3. Inspect `git diff`.
-4. Report every modified file.
-5. Remove temporary artifacts not needed for reproducibility.
-6. Commit only investigation artifacts if consistent with repository workflow.
-
-Suggested commit:
-
-`research: close protocol parity investigation`
-
-Then STOP.
-
----
-
-# 12. Final response to the operator
-
-Report concisely:
-
-- pump.fun final parity result;
-- PumpSwap layout result;
-- PumpSwap reserve result;
-- virtual reserve result;
-- fee-regime result;
-- SELL parity;
-- BUY parity;
-- sample counts;
-- exact-match percentages;
-- final formulas;
-- remaining uncertainty;
-- exact production files that will need changing;
-- whether M2 quote correctness is now **CLOSED** or **BLOCKED**.
-
-Do not implement anything after the report.
+This is the final investigation pass. Do not broaden scope or start another research phase. The output must definitively state what quote math Neurone can trust from Yellowstone state and what it must refuse to trade.

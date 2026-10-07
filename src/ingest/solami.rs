@@ -253,6 +253,7 @@ fn update_slot(update: &SubscribeUpdate) -> Option<u64> {
 /// Load the Solami gRPC credential from the environment (never a file).
 pub fn load_token() -> Result<String> {
     std::env::var("SOLAMI_GRPC_TOKEN")
+        .or_else(|_| std::env::var("SOLAMI_GRPC_API_KEY"))
         .or_else(|_| std::env::var("SOLAMI_API_KEY"))
         .ok()
         .filter(|t| !t.trim().is_empty())
