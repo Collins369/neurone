@@ -124,6 +124,12 @@ fn k_out(reserve_in: u128, reserve_out: u128, net_in: u128) -> Option<u128> {
     Some(num / den)
 }
 
+/// Public constant-product output helper: `floor(reserve_out·input /
+/// (reserve_in + input))`. Returns `None` on overflow or zero denominator.
+pub fn constant_product(reserve_in: u128, reserve_out: u128, input: u128) -> Option<u128> {
+    k_out(reserve_in, reserve_out, input)
+}
+
 fn quote_pumpswap(
     market: &MarketState,
     side: Side,

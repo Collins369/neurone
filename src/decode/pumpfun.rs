@@ -111,12 +111,43 @@ pub fn decode_trade_event(payload: &[u8]) -> Option<DecodedSwap> {
             }
         }
     }
+    // Appended tail: track_volume + 4 counters, ix_name, mayhem + cashback/
+    // buyback, shareholders vec, then the quote-aware fields. Non-SOL (e.g.
+    // USDC) pairs carry `sol_amount == 0` and put the value in `quote_amount`
+    // with `virtual_quote_reserves` / `real_quote_reserves`.
     let mut ix_name = None;
+    let mut quote_amount = None;
+    let mut virtual_quote_reserves = None;
+    let mut real_quote_reserves = None;
+    let mut _quote_mint = None;
     if r.take(1 + 8 * 4).is_some() {
-        if let Some(name) = r.string() {
-            ix_name = Some(name);
+        ix_name = r.string();
+        let _mayhem = r.bool();
+        let _cashback_bps = r.u64();
+        let _cashback = r.u64();
+        let _buyback_bps = r.u64();
+        let _buyback = r.u64();
+        if let Some(n) = r.u32() {
+            r.take(n as usize * (32 + 2));
         }
+        _quote_mint = r.pubkey();
+        quote_amount = r.u64();
+        virtual_quote_reserves = r.u64();
+        real_quote_reserves = r.u64();
     }
+
+    // Choose the quote side: SOL-paired coins use the leading sol fields;
+    // non-SOL pairs (sol_amount == 0) use the appended quote fields.
+    let (eff_quote_amount, eff_virtual_quote, eff_real_quote) =
+        if sol_amount == 0 && quote_amount.unwrap_or(0) > 0 {
+            (
+                quote_amount.unwrap_or(0),
+                virtual_quote_reserves.unwrap_or(0) as i128,
+                real_quote_reserves.unwrap_or(0),
+            )
+        } else {
+            (sol_amount, virtual_sol_reserves as i128, real_sol_reserves)
+        };
 
     Some(DecodedSwap {
         venue: Venue::PumpFun,
@@ -125,12 +156,12 @@ pub fn decode_trade_event(payload: &[u8]) -> Option<DecodedSwap> {
         quote_mint: None,
         is_buy,
         base_amount: token_amount,
-        quote_amount: sol_amount,
-        user_quote_amount: sol_amount,
+        quote_amount: eff_quote_amount,
+        user_quote_amount: eff_quote_amount,
         base_reserve: Some(real_token_reserves),
-        quote_reserve: Some(real_sol_reserves),
+        quote_reserve: Some(eff_real_quote),
         virtual_base_reserve: Some(virtual_token_reserves),
-        virtual_quote_reserve: Some(virtual_sol_reserves as i128),
+        virtual_quote_reserve: Some(eff_virtual_quote),
         fee_quote: fee_quote.saturating_add(creator_fee_quote),
         fee_bps,
         timestamp: Some(timestamp),

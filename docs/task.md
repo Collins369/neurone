@@ -1,596 +1,536 @@
-# Task: M3 — Yellowstone Live Protocol Parity Test
+# Task: M3.1 — Complete Pump.fun Yellowstone Trade-Time State
 
 ## Objective
 
-Now that the Pump.fun + PumpSwap documentation/reconciliation investigation is complete, test the **confirmed quote/parity paths directly through Solami Yellowstone gRPC**.
+Fix the remaining Pump.fun Yellowstone state problem discovered in M3.
 
-This task is about validating the complete live data path:
+M3 proved that the quote formulas themselves are correct, but Pump.fun SELL and token-target `buy` cannot currently be guaranteed exact from the transaction/event stream alone for a significant subset of live events because the event's reconstructed reserves are not always the true trade-time pre-state.
 
-```text
-Solami Yellowstone gRPC
-        ↓
-live account/event updates
-        ↓
-decoder
-        ↓
-trade-time state
-        ↓
-protocol + instruction identification
-        ↓
-exact integer quote engine
-        ↓
-compare against actual on-chain trade result
-        ↓
-telemetry + latency measurement
-```
+The M3 report states that the required fix is:
 
-Do **not** reopen the previous documentation investigation unless the Yellowstone test produces a genuine contradiction.
+> add a Pump.fun bonding-curve **account subscription through Yellowstone** and correlate it with the transaction/event stream, or implement a version-aware `TradeEvent` decoder if that is sufficient.
 
-Do **not** implement trading/execution yet.
+The goal of this task is to make Pump.fun market state sufficiently complete that Neurone can continuously scan and track Pump.fun markets without relying on RPC polling in the hot path.
 
-Do **not** redesign the Neurone architecture.
+Do not redesign Neurone.
+
+Do not implement trading/execution.
+
+Do not reopen the entire protocol-parity investigation.
 
 ---
 
 # 1. Source of Truth
 
-Use the completed Pump.fun/PumpSwap reconciliation report as the protocol-parity baseline.
+Use the existing M3 report:
 
-The report established the following production-certifiable quote paths:
+`MILESTONE_3_YELLOWSTONE_PARITY_REPORT.md`
 
-### Pump.fun
+Important M3 findings:
 
-1. SELL
-2. `buy_exact_sol_in`
-3. `buy_exact_quote_in`
+- PumpSwap is already 100% exact through Yellowstone:
+  - SELL: 10,683/10,683
+  - `buy_exact_quote_in`: 6,523/6,523
+  - `buy`: 2,435/2,435
+- Pump.fun exact-in BUYs are 528/528 exact.
+- Pump.fun SELL and token-target `buy` remain state-dependent.
+- The formula is not the identified problem.
+- The live event stream is insufficient for the true trade-time state in the affected cases.
+- M3 explicitly identifies the Pump.fun bonding-curve account stream as the required next direction.
+- M3 also identified foreign-event collisions and decoder/layout issues; preserve those fixes.
 
-### PumpSwap
-
-1. SELL
-2. `buy_exact_quote_in`
-3. `buy` when the quote inflow required by the formula is observable
-
-The reconciliation also established:
-
-- PumpSwap effective quote reserve:
-
-```text
-q_eff = raw_quote_reserve + event.virtual_quote_reserves
-```
-
-- Pump.fun exact-in BUY:
-
-```text
-tokens_out =
-floor(
-    virtual_base_reserve * (input - 1)
-    /
-    (virtual_quote_reserve + input - 1)
-)
-```
-
-- PumpSwap exact-in BUY:
-
-```text
-base_out =
-floor(
-    base_reserve * (quote_input - 1)
-    /
-    (effective_quote_reserve + quote_input - 1)
-)
-```
-
-- PumpSwap SELL:
-
-```text
-quote_out =
-floor(
-    effective_quote_reserve * base_input
-    /
-    (base_reserve + base_input)
-)
-```
-
-Use the exact formulas and state semantics established by the reconciliation. Do not replace them with floating-point approximations.
+Do not undo working M3 fixes.
 
 ---
 
-# 2. First Inspect Existing Neurone Implementation
+# 2. First Inspect the Existing Code
 
-Before writing code:
+Before changing anything, inspect:
 
-1. Inspect the current Neurone repository.
-2. Identify:
-   - Yellowstone client
-   - subscription code
-   - protobuf/IDL definitions
-   - normalizer
-   - market-state engine
-   - sharding
-   - existing quote engine
-   - existing Pump.fun/PumpSwap decoders
-   - existing tests
-   - telemetry/performance infrastructure
-3. Determine what M1/M2/M2.1 already implemented.
-4. Reuse existing architecture where appropriate.
+- `src/ingest/solami.rs`
+- `src/events.rs`
+- `src/decode/pumpfun.rs`
+- `src/decode/mod.rs`
+- `src/quote.rs`
+- `src/engine.rs`
+- `src/shard.rs`
+- `src/config.rs`
+- existing Yellowstone subscription filters
+- existing tests
+- M3 validation harness
+- M3 report
 
-Do not duplicate an existing Yellowstone client or quote engine.
+Understand exactly how transaction updates and account updates are currently handled.
 
-Do not create a parallel architecture merely for this task.
+Reuse the existing Yellowstone connection and subscription infrastructure.
 
----
-
-# 3. Yellowstone Connection Test
-
-Connect to the existing Solami Yellowstone gRPC endpoint/configuration already used by Neurone.
-
-Verify:
-
-- connection succeeds
-- authentication works
-- subscription remains alive
-- updates are continuously received
-- reconnect behavior works if already implemented
-- no polling is introduced into the hot path
-
-Use the project's existing environment/configuration conventions.
-
-Do not hardcode credentials.
-
-Do not print credentials or tokens into logs.
+Do not create a second gRPC client.
 
 ---
 
-# 4. Live Yellowstone Data Path
+# 3. Determine the Correct Yellowstone State Source
 
-Build or complete the smallest path necessary to observe the relevant Pump.fun and PumpSwap state/events directly from Yellowstone.
+Before implementing the correlation logic, establish exactly which Pump.fun account(s) contain the required bonding-curve state.
 
-The hot path should be:
+The minimum required state is the state used by the already validated Pump.fun formulas:
+
+- virtual token/base reserve
+- virtual quote/SOL reserve
+- any required fee-related state
+- mint association
+- bonding-curve identity/address
+- account version/layout where relevant
+
+Use the existing protocol documentation/reconciliation work and the current decoder.
+
+If multiple Pump.fun account layouts exist, identify them explicitly.
+
+Do not assume one fixed byte layout for every historical account.
+
+---
+
+# 4. Add Pump.fun Bonding-Curve Account Subscription
+
+Extend the existing Yellowstone subscription so the runtime receives the relevant Pump.fun bonding-curve account updates.
+
+Requirements:
+
+- Yellowstone gRPC only for the production/hot path
+- no RPC polling
+- no REST polling
+- reuse existing connection/authentication
+- maintain current transaction/event subscriptions
+- account updates must be filtered as narrowly as practical
+- do not subscribe indiscriminately to every Solana account if a Pump.fun-specific filter is available
+
+Document the exact Yellowstone account filter used.
+
+---
+
+# 5. Build a Bonding-Curve State Cache
+
+Create a deterministic in-memory state cache keyed by the bonding-curve account/mint identity.
+
+For each active Pump.fun bonding curve, retain only the state required for:
+
+- market filtering
+- exact quote calculation
+- state validation
+- trade-time correlation
+
+At minimum, the state record should contain:
 
 ```text
-Yellowstone update
-    ↓
-decode
-    ↓
-normalize
-    ↓
-identify protocol/instruction
-    ↓
-obtain required trade-time state
-    ↓
-quote
+bonding_curve_address
+mint
+virtual_token_reserves
+virtual_quote_reserves
+real_token_reserves
+real_quote_reserves
+fee-related fields if required
+account_version/layout
+slot
+write/update ordering information
 ```
 
-Keep this deterministic.
+Use exact integer types.
 
-Do not introduce:
+No floating point.
 
-- LLMs
-- narrative analysis
-- social data
-- REST polling
-- sequential token scanning
-- unnecessary RPC requests
-- database writes in the hot path
+Avoid unnecessary allocations and locks in the hot path.
 
-Async telemetry may run alongside the hot path.
+The cache must support many markets concurrently.
 
 ---
 
-# 5. Pump.fun Yellowstone Validation
+# 6. Correlate Account State With Transaction Events
 
-Test the following independently.
+This is the core of the task.
 
-## 5.1 Pump.fun SELL
+For every Pump.fun trade event:
 
-For every usable observed SELL:
+1. Identify the mint/bonding curve.
+2. Identify the relevant slot/update ordering.
+3. Obtain the correct trade-time bonding-curve state.
+4. Determine whether the event reserves are post-trade and reconstruct pre-state where appropriate.
+5. Validate:
 
-1. Decode the relevant bonding curve state.
-2. Determine the correct trade-time pre-state.
-3. Decode the trade/event.
-4. Calculate the expected gross quote output.
-5. Apply the correct observed/applicable fee state.
-6. Compare with the actual transaction/event result.
+```text
+pre_state + trade_delta = post_state
+```
 
-Record:
+where the protocol semantics require it.
 
-- signature
-- mint
-- instruction
-- relevant reserves
-- input amount
-- fee bps
-- calculated output
-- observed output
-- difference
-- exact/non-exact classification
+Do not simply use the latest account state.
+
+Do not simply use the event's reserve fields when they are known to be unreliable.
+
+Do not race a newer account update against an older transaction.
+
+The correlation logic must respect Solana/Yellowstone update ordering and slots.
+
+---
+
+# 7. Handle Multiple Trades in the Same Transaction
+
+M3 specifically observed that multi-event transactions can make naive:
+
+```text
+pre = event_post - event_delta
+```
+
+reconstruction unreliable.
+
+Therefore test transactions containing:
+
+- one Pump.fun trade
+- multiple Pump.fun trades
+- multiple relevant events
+- multiple instructions in one transaction
+- transactions involving other programs
+
+For multi-event transactions, determine whether the true pre-state can be reconstructed from:
+
+- ordered transaction events
+- account update state
+- instruction ordering
+- event fields
+- or a combination
+
+Do not assume one event is independent of another.
+
+---
+
+# 8. Account Layout / Version Handling
+
+M3 found that Pump.fun account/event layouts can vary.
+
+Implement explicit layout/version handling where required.
+
+Do not create a fragile decoder that assumes one fixed account length forever.
+
+For unknown layouts:
+
+```text
+UNKNOWN_LAYOUT
+```
+
+must be rejected safely.
+
+Never silently decode unknown bytes as a known version.
+
+Add tests for every layout currently supported by the project/evidence.
+
+---
+
+# 9. Re-run Pump.fun Live Parity
+
+After implementing the account stream and correlation:
+
+run the live Yellowstone validation again.
+
+At minimum measure:
+
+### Pump.fun SELL
 
 Target:
 
-**100% exact for valid ground-truth samples.**
+**100% exact for valid/reconstructable events.**
 
----
+### Pump.fun `buy_exact_sol_in`
 
-## 5.2 `buy_exact_sol_in`
-
-Validate:
-
-```text
-tokens_out =
-floor(
-    virtual_base_reserve * (sol_in - 1)
-    /
-    (virtual_quote_reserve + sol_in - 1)
-)
-```
-
-Ensure the `sol_in` value and reserve state correspond to the correct trade-time state.
-
-Target:
+Must remain:
 
 **100% exact.**
 
----
+### Pump.fun `buy_exact_quote_in`
 
-## 5.3 `buy_exact_quote_in`
-
-Validate the corresponding exact-quote-input path using the reconciled integer formula and fee semantics.
-
-Target:
+Must remain:
 
 **100% exact.**
 
----
-
-# 6. PumpSwap Yellowstone Validation
-
-## 6.1 Effective Quote Reserve
-
-This is a critical test.
-
-For every relevant PumpSwap event:
-
-```text
-effective_quote_reserve =
-raw_quote_reserve +
-event.virtual_quote_reserves
-```
-
-Verify that the **event's trade-time virtual reserve** is used rather than a later/current account value.
-
-Explicitly test historical/nonzero virtual-reserve cases.
-
-The previous M2.2B `(20,5)` issue was resolved by using the event-time value. Make sure the live Yellowstone implementation does not regress this.
-
----
-
-## 6.2 PumpSwap SELL
-
-Validate:
-
-```text
-quote_out =
-floor(
-    effective_quote_reserve * base_in
-    /
-    (base_reserve + base_in)
-)
-```
-
-Test across the observed dynamic fee regimes:
-
-- `(25,5)`
-- `(2,93)`
-- `(20,5)`
+### Pump.fun token-target `buy`
 
 Target:
 
-**100% exact for valid ground-truth samples.**
+**100% exact for valid/reconstructable events.**
 
----
-
-## 6.3 PumpSwap `buy_exact_quote_in`
-
-Validate the exact-input formula:
+The existing M3 formula for token-target `buy` remains:
 
 ```text
-base_out =
-floor(
-    base_reserve * (quote_input - 1)
+sol = ceil(
+    virtual_quote_reserve * token_amount
     /
-    (effective_quote_reserve + quote_input - 1)
+    (virtual_base_reserve - token_amount)
 )
 ```
 
-Target:
-
-**100% exact.**
+Do not change the formula unless new ground-truth evidence proves it wrong.
 
 ---
 
-## 6.4 PumpSwap `buy`
+# 10. Yellowstone-Only Classification
 
-Validate the token-target/base-output direction separately.
+Update the M3 classification.
 
-Do not accidentally treat it as `buy_exact_quote_in`.
+The desired result is:
 
-If the quote inflow can be reconstructed exactly from Yellowstone-observable state, validate the resulting quote/output.
+| Path | Desired classification |
+|---|---|
+| Pump.fun SELL | YELLOWSTONE-ONLY EXACT |
+| Pump.fun `buy_exact_sol_in` | YELLOWSTONE-ONLY EXACT |
+| Pump.fun `buy_exact_quote_in` | YELLOWSTONE-ONLY EXACT |
+| Pump.fun token-target `buy` | YELLOWSTONE-ONLY EXACT |
+| PumpSwap SELL | YELLOWSTONE-ONLY EXACT |
+| PumpSwap `buy_exact_quote_in` | YELLOWSTONE-ONLY EXACT |
+| PumpSwap `buy` | YELLOWSTONE-ONLY EXACT |
 
-If a required input cannot be reconstructed from Yellowstone alone, document the exact missing state instead of inventing it.
+If any path cannot achieve this, do not fake the result.
+
+State precisely:
+
+- what state is missing
+- why Yellowstone does not provide it
+- whether the limitation is decoder, filter, ordering, layout, or actual protocol observability
 
 ---
 
-# 7. Ground Truth
+# 11. Preserve the Scanner Architecture
 
-Ground truth must come from the actual Solana transaction/event/account state.
+This is not just a parity test.
 
-For each test:
+The resulting state feed must be usable by the future Neurone scanner.
+
+The intended flow is:
 
 ```text
-Yellowstone-observed inputs
-        ↓
-Neurone quote
-        ↓
-actual on-chain result
+                 YELLOWSTONE
+                      │
+             ┌────────┴────────┐
+             ↓                 ↓
+       Transactions         Accounts
+             │                 │
+             └────────┬────────┘
+                      ↓
+              Event Normalizer
+                      ↓
+              Market Identity
+                      ↓
+              State Correlation
+                      ↓
+             Parallel Sharded State
+                      ↓
+                Market Filters
 ```
 
-Compare integer values exactly.
-
-Do not use approximate percentage error as the primary parity test.
-
-A difference of `1` lamport/token unit is still a mismatch unless the protocol formula explicitly permits that rounding behavior.
-
----
-
-# 8. Yellowstone-Only Requirement
-
-Determine explicitly which quote paths can be reconstructed from Yellowstone alone.
-
-For each path classify:
-
-- `YELLOWSTONE-ONLY EXACT`
-- `YELLOWSTONE-ONLY BUT STATE-DEPENDENT`
-- `REQUIRES RPC`
-- `NOT CURRENTLY RECONSTRUCTABLE`
-
-The goal is to maximize the first category.
-
-Do not quietly fall back to RPC.
-
-If RPC is used for **ground truth validation only**, clearly separate it from the production/hot path.
-
----
-
-# 9. Parallelism Requirement
-
-This test must preserve Neurone's intended architecture.
-
-Do not implement:
+Do not turn the system into:
 
 ```text
-receive token A
-→ finish A
-→ receive token B
-→ finish B
+receive token
+→ finish token
+→ scan next token
 ```
 
-Instead verify that independent markets can be processed concurrently:
+Many Pump.fun and PumpSwap markets must be trackable simultaneously.
 
-```text
-Yellowstone
-    ↓
-normalizer
-    ↓
-hash(pool/mint)
-    ↓
-parallel shards
- ├── market A
- ├── market B
- ├── market C
- └── market N
-```
+Reuse the existing deterministic shard architecture.
 
-The quote calculation itself should remain deterministic and extremely small.
-
-Measure whether decoding/state updates or locking become bottlenecks.
+Do not add an unnecessary database to the hot path.
 
 ---
 
-# 10. Latency Measurement
+# 12. State Freshness
 
-Measure at least:
+The cache must distinguish:
 
-1. Yellowstone message arrival
-2. decode start/end
-3. normalization
-4. state update
-5. protocol/instruction identification
-6. quote calculation
-7. ground-truth comparison where applicable
+- current state
+- stale state
+- unknown state
+
+A stale bonding-curve state must not be used for an exact quote.
+
+Define deterministic rules for:
+
+```text
+KNOWN
+STALE
+UNKNOWN
+```
+
+Include slot/update metadata so the quote engine knows whether the state is safe to use.
+
+Do not silently fall back to an older state.
+
+---
+
+# 13. Performance
+
+Measure the added account stream/correlation cost.
 
 Report:
 
+- account updates/sec
+- transaction updates/sec
+- correlation latency
+- state-cache update latency
+- quote latency
 - p50
 - p95
 - p99
-- throughput
-- error/drop rate
+- memory usage if practical
+- lock/contention behavior
 
-Do not contaminate hot-path latency measurements with disk/database logging.
+The account stream must not destroy the low-latency characteristics demonstrated by M3.
 
-Telemetry should be asynchronous where possible.
-
----
-
-# 11. Required Test Matrix
-
-Create a matrix similar to:
-
-| Protocol | Instruction | State Source | Formula | Samples | Exact | Mismatch | Yellowstone-only |
-|---|---|---|---|---:|---:|---:|---|
-| Pump.fun | SELL | Yellowstone | ... | ... | ... | ... | ... |
-| Pump.fun | buy_exact_sol_in | Yellowstone | ... | ... | ... | ... | ... |
-| Pump.fun | buy_exact_quote_in | Yellowstone | ... | ... | ... | ... | ... |
-| PumpSwap | SELL | Yellowstone | ... | ... | ... | ... | ... |
-| PumpSwap | buy_exact_quote_in | Yellowstone | ... | ... | ... | ... | ... |
-| PumpSwap | buy | Yellowstone | ... | ... | ... | ... | ... |
-
-Also include dynamic fee regimes where relevant.
+Keep telemetry asynchronous.
 
 ---
 
-# 12. Failure Classification
+# 14. Regression Tests
 
-Every mismatch must be classified.
+Add deterministic tests covering:
 
-Use:
+1. single Pump.fun trade
+2. multiple Pump.fun trades in one transaction
+3. event + account state correlation
+4. correct trade-time state selection
+5. stale account state rejection
+6. unknown layout rejection
+7. supported account layouts
+8. Pump.fun SELL exact parity
+9. Pump.fun token-target BUY exact parity
+10. existing Pump.fun exact-in BUY parity
+11. existing PumpSwap parity
+12. foreign-event collision protection
+13. account-update ordering
+14. same-slot update handling where relevant
 
-- decoder error
-- wrong account layout
-- wrong instruction identification
-- wrong trade-time state
-- wrong fee state
-- wrong reserve semantics
-- wrong event interpretation
-- formula error
-- rounding error
-- multi-event transaction ambiguity
-- missing Yellowstone field/state
-- genuine unexplained protocol behavior
-
-Do not simply report "quote mismatch."
-
----
-
-# 13. Regression Protection
-
-Add deterministic tests for every parity rule that is successfully validated.
-
-Especially protect:
-
-- Pump.fun `-1`
-- PumpSwap `-1`
-- PumpSwap signed virtual quote reserves
-- event-time virtual reserve versus current account reserve
-- dynamic fee regimes
-- exact integer arithmetic
-
-Do not use floating point.
-
-Do not remove existing tests.
-
-Run the existing relevant test suite after changes.
+All existing tests must remain green.
 
 ---
 
-# 14. Production-Code Boundary
-
-This task is a **live Yellowstone validation milestone**, not the final trading engine.
+# 15. No Scope Creep
 
 Do NOT implement:
 
-- automatic trade execution
-- Beam submission
-- TP/SL execution
-- capital allocation
-- autonomous strategy changes
+- Beam
+- transaction submission
+- automatic trading
+- TP/SL
+- capital arbitration
+- strategy logic
+- narrative analysis
+- social analysis
+- LLM logic
+- database persistence
+- RPC polling fallback
 
-The output should prove that Neurone can observe and calculate correctly from Yellowstone before execution is added.
+This task is strictly:
+
+**Pump.fun Yellowstone state completeness + correlation + parity.**
 
 ---
 
-# 15. Deliverable
+# 16. Required Final Report
 
-Produce a detailed technical report after the test.
+Create a technical report covering:
+
+## 1. Problem Confirmed
+
+What exactly caused the M3 Pump.fun state-dependent failures?
+
+## 2. Account Source
+
+Which Pump.fun account(s) were subscribed to and why?
+
+## 3. Yellowstone Subscription
+
+Exact account filter and subscription design.
+
+## 4. State Cache
+
+State structure, keying, freshness, and update ordering.
+
+## 5. Correlation Algorithm
+
+Explain exactly how transaction/event updates are correlated with account updates.
+
+Include multi-event transaction handling.
+
+## 6. Layout Handling
+
+Supported Pump.fun account versions/layouts.
+
+## 7. Live Parity Results
 
 Include:
 
-## 1. Existing Architecture Used
+- samples
+- exact
+- mismatches
+- errors
+- classification
 
-What M1/M2/M2.1 components were reused.
+For every Pump.fun instruction.
 
-## 2. Yellowstone Connection
+## 8. Regression Results
 
-Endpoint/configuration, subscription type, filters, connection behavior.
+Existing total test count and new tests.
 
-Do not expose credentials.
+## 9. Performance
 
-## 3. Live Data Path
+Latency and throughput.
 
-Exact path from Yellowstone update to quote result.
+## 10. Scanner Readiness
 
-## 4. Pump.fun Results
+State whether Pump.fun markets can now be continuously tracked in the parallel scanner without RPC polling.
 
-Separate results for:
+## 11. Remaining Limitations
 
-- SELL
-- `buy_exact_sol_in`
-- `buy_exact_quote_in`
+Only real limitations.
 
-## 5. PumpSwap Results
+## 12. Final Status
 
-Separate results for:
-
-- SELL
-- `buy_exact_quote_in`
-- `buy`
-
-## 6. Yellowstone-Only Assessment
-
-Clearly identify which paths are truly reconstructable without RPC.
-
-## 7. Exact Parity Matrix
-
-Include sample counts, exact counts, mismatches, and mismatch classifications.
-
-## 8. Latency / Throughput
-
-Include p50/p95/p99 and throughput.
-
-## 9. Problems Found
-
-Only actual problems discovered during the live test.
-
-## 10. Changes Made
-
-List code/tests/config changes precisely.
-
-## 11. Final M3 Status
-
-Classify:
+Use exactly one:
 
 - `PASS`
 - `PASS WITH EXCLUSIONS`
 - `FAIL`
 
-Explain why.
+The target is:
+
+**PASS**
+
+if all supported Pump.fun paths achieve exact Yellowstone-only parity.
 
 ---
 
-# Critical Rules
+# Completion Condition
 
-1. Do not reopen the already-completed documentation investigation unless Yellowstone produces contradictory evidence.
-2. Do not blindly trust the old implementation.
-3. Do not blindly trust the old report either; validate it through live Yellowstone.
-4. Do not change formulas merely because a sample mismatches.
-5. Trace mismatches to state, decoding, fees, instruction semantics, or formula before changing anything.
-6. Keep Pump.fun and PumpSwap logic separate.
-7. Keep each instruction variant separate.
-8. Use integer arithmetic only.
-9. Never use floating point for protocol quotes.
-10. Never silently fall back to RPC in the production path.
-11. RPC may be used only as an explicit ground-truth/reference source during validation.
-12. Do not introduce unnecessary architecture.
-13. Preserve Neurone's parallel/sharded design.
-14. Do not implement trading/execution yet.
-15. If all validated paths pass, stop. Do not create another open-ended investigation.
+The task is complete when Neurone can do:
 
-## Completion Condition
+```text
+Yellowstone
+    ↓
+Pump.fun transaction/event
+    +
+Pump.fun bonding-curve account state
+    ↓
+correct trade-time state
+    ↓
+exact quote
+    ↓
+on-chain parity
+```
 
-The task is complete when we have empirically demonstrated:
+for Pump.fun SELL and token-target BUY, while preserving the already-passing Pump.fun exact-in and all PumpSwap paths.
 
-**Solami Yellowstone → live decode → trade-time state → exact protocol quote → on-chain parity**
+At that point, Neurone should have a reliable Yellowstone-derived market-state foundation suitable for the next master build stage:
 
-for every supported path that can be reconstructed from Yellowstone, with explicit exclusions for anything that cannot.
+**Discovery → deterministic filters/safety → pre-arm**
 
-Write the final report to the repository's existing investigation/report location. Do not overwrite the source blueprint.
+Do not proceed into execution after this task.
+
+Write the final report to the existing investigation/report location.
+
+Do not overwrite the Neurone blueprint.

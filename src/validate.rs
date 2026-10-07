@@ -7,6 +7,8 @@
 //! not the trading path).
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,9 +17,107 @@ use futures::StreamExt;
 use crate::config::Config;
 use crate::decode::{DecodedSwap, Venue};
 use crate::error::Result;
-use crate::events::{normalize, EventKind, Normalized};
+use crate::events::{normalize, Normalized};
+use crate::events::{AccountUpdate, EventKind, MarketKey};
 use crate::ingest::solami::{self, Connector, TonicConnector};
 use crate::quote::{self, Instruction};
+
+/// pump.fun `BondingCurve` anchor discriminator (base58), used as the account
+/// subscription's memcmp filter so only bonding curves are streamed.
+pub const PUMPFUN_BONDING_CURVE_DISC_B58: &str = "4y6pru6YvC7";
+pub const PUMPFUN_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+
+/// Recent bonding-curve states per curve, keyed by the curve account pubkey.
+///
+/// A small ring keeps enough history to pick the state that is strictly older
+/// than a trade's slot, which is the deterministic trade-time pre-state. This
+/// avoids racing a newer (post-trade) account update against an older trade.
+const CURVE_HISTORY: usize = 4;
+
+#[derive(Default)]
+struct CurveHistory {
+    /// (slot, virtual_base, virtual_quote) newest-last.
+    states: VecDeque<(u64, u128, i128)>,
+    layout_len: usize,
+}
+
+impl CurveHistory {
+    fn push(&mut self, slot: u64, vb: u128, vq: i128, layout_len: usize) {
+        self.layout_len = layout_len;
+        if let Some(last) = self.states.back_mut() {
+            if last.0 == slot {
+                *last = (slot, vb, vq);
+                return;
+            }
+            if slot < last.0 {
+                // Out-of-order: keep the ring sorted by slot.
+                if let Some(pos) = self.states.iter().position(|s| s.0 >= slot) {
+                    if self.states[pos].0 == slot {
+                        self.states[pos] = (slot, vb, vq);
+                    } else {
+                        self.states.insert(pos, (slot, vb, vq));
+                    }
+                } else {
+                    self.states.push_back((slot, vb, vq));
+                }
+            } else {
+                self.states.push_back((slot, vb, vq));
+            }
+        } else {
+            self.states.push_back((slot, vb, vq));
+        }
+        while self.states.len() > CURVE_HISTORY {
+            self.states.pop_front();
+        }
+    }
+
+    /// Newest state strictly older than `trade_slot`.
+    fn pre_state(&self, trade_slot: u64) -> Option<(u128, i128)> {
+        self.states
+            .iter()
+            .rev()
+            .find(|(slot, _, _)| *slot < trade_slot)
+            .map(|(_, vb, vq)| (*vb, *vq))
+    }
+}
+
+/// Deterministic in-memory bonding-curve state cache.
+#[derive(Default)]
+pub struct CurveCache {
+    curves: HashMap<MarketKey, CurveHistory>,
+    pub updates: u64,
+    pub startup_updates: u64,
+}
+
+impl CurveCache {
+    fn record(&mut self, a: &AccountUpdate) {
+        let Some(decoded) = &a.decoded else { return };
+        if decoded.venue != Venue::PumpFun {
+            return;
+        }
+        let (Some(vb), Some(vq)) = (decoded.virtual_base_reserve, decoded.virtual_quote_reserve)
+        else {
+            return;
+        };
+        self.updates += 1;
+        if a.is_startup {
+            self.startup_updates += 1;
+        }
+        self.curves
+            .entry(a.pubkey)
+            .or_default()
+            .push(a.slot, vb, vq, a.data_len as usize);
+    }
+
+    /// Number of curves currently cached.
+    pub fn len(&self) -> usize {
+        self.curves.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.curves.is_empty()
+    }
+}
 
 /// Per-(venue, instruction) parity counters.
 #[derive(Default, Clone, Debug)]
@@ -39,6 +139,11 @@ pub struct ValidationReport {
     pub decode_ms: Vec<u64>,
     pub quote_ns: Vec<u64>,
     pub paths: BTreeMap<String, PathStats>,
+    pub curve_updates: u64,
+    pub curve_startup_updates: u64,
+    pub curves_cached: usize,
+    pub curve_corroborations: u64,
+    pub curve_corroborated: u64,
 }
 
 impl ValidationReport {
@@ -75,6 +180,25 @@ impl ValidationReport {
 
 /// Validate live swaps for `seconds`.
 pub async fn run(config: &Config, seconds: u64) -> Result<ValidationReport> {
+    // Enable the pump.fun bonding-curve account stream for the correlation test
+    // (narrow: owner = pump.fun program + BondingCurve discriminator).
+    let mut config = config.clone();
+    if !config
+        .ingest
+        .filters
+        .account_programs
+        .iter()
+        .any(|p| p == PUMPFUN_PROGRAM_ID)
+    {
+        config
+            .ingest
+            .filters
+            .account_programs
+            .push(PUMPFUN_PROGRAM_ID.to_string());
+    }
+    config.ingest.filters.account_memcmp_base58 = Some(PUMPFUN_BONDING_CURVE_DISC_B58.to_string());
+    let config = &config;
+
     let token = solami::load_token()?;
     let connector = TonicConnector::new(&config.ingest, token);
     let request = solami::build_subscribe_request(&config.ingest, None)?;
@@ -84,6 +208,7 @@ pub async fn run(config: &Config, seconds: u64) -> Result<ValidationReport> {
         connected: true,
         ..Default::default()
     };
+    let mut cache = CurveCache::default();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(seconds);
 
     loop {
@@ -100,13 +225,33 @@ pub async fn run(config: &Config, seconds: u64) -> Result<ValidationReport> {
         let Normalized::Event(event) = normalized else {
             continue;
         };
+        report.decode_ms.push(((t1 - t0) / 1_000) as u64);
+        if let EventKind::Account(a) = &event.kind {
+            cache.record(a);
+            continue;
+        }
         let EventKind::Transaction(tx) = &event.kind else {
             continue;
         };
-        report.decode_ms.push(((t1 - t0) / 1_000) as u64);
         for swap in &tx.swaps {
             report.swaps += 1;
             let key = format!("{}/{}", swap.venue.as_str(), instruction_label(swap));
+            // Corroborate the event-derived pre-state against the bonding-curve
+            // account stream (state strictly older than the trade's slot).
+            if swap.venue == Venue::PumpFun {
+                if let (Some((vb, vq)), Ok(s)) = (
+                    cache
+                        .curves
+                        .get(&swap.market_key)
+                        .and_then(|h| h.pre_state(tx.slot)),
+                    quote::swap_pre_state(swap),
+                ) {
+                    report.curve_corroborations += 1;
+                    if vb == s.pre_base && (vq as u128) == s.pre_quote {
+                        report.curve_corroborated += 1;
+                    }
+                }
+            }
             let tq = crate::clock::now_ns();
             let outcome = evaluate(swap);
             report
@@ -134,6 +279,9 @@ pub async fn run(config: &Config, seconds: u64) -> Result<ValidationReport> {
             }
         }
     }
+    report.curve_updates = cache.updates;
+    report.curve_startup_updates = cache.startup_updates;
+    report.curves_cached = cache.len();
     Ok(report)
 }
 
@@ -213,10 +361,15 @@ pub async fn run_to_text(config: &Config, seconds: u64) -> Result<String> {
         q99 as f64 / 1000.0,
     );
     let mut out = format!(
-        "connected={} updates={} swaps={}\n{}",
+        "connected={} updates={} swaps={} curve_updates={} curve_startup={} curves_cached={} acct_corroborations={} acct_corroborated={}\n{}",
         report.connected,
         report.updates,
         report.swaps,
+        report.curve_updates,
+        report.curve_startup_updates,
+        report.curves_cached,
+        report.curve_corroborations,
+        report.curve_corroborated,
         report.matrix()
     );
     out.push_str(&format!(

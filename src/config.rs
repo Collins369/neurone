@@ -111,6 +111,11 @@ pub struct FilterConfig {
     pub account_programs: Vec<String>,
     /// Explicit account pubkeys to track as markets.
     pub account_addresses: Vec<String>,
+    /// Optional base58 anchor discriminator filter (byte offset 0) applied to
+    /// the account subscription so only one account type is streamed.
+    pub account_memcmp_base58: Option<String>,
+    /// Optional `accounts_data_slice` length in bytes (bounds per-account data).
+    pub account_data_slice_len: Option<u64>,
 }
 
 /// Offline generator settings (no live credential required).
@@ -198,6 +203,8 @@ impl Default for FilterConfig {
             // addresses instead when you want account-driven state.
             account_programs: Vec::new(),
             account_addresses: Vec::new(),
+            account_memcmp_base58: None,
+            account_data_slice_len: None,
         }
     }
 }

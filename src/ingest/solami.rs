@@ -342,12 +342,31 @@ pub fn build_subscribe_request(
 ) -> Result<SubscribeRequest> {
     let mut accounts: HashMap<String, SubscribeRequestFilterAccounts> = HashMap::new();
     if !cfg.filters.account_programs.is_empty() || !cfg.filters.account_addresses.is_empty() {
+        // Optional anchor discriminator filter (offset 0) to stream a single
+        // pump.fun account type instead of every account owned by the program.
+        let mut filters = Vec::new();
+        if let Some(disc) = &cfg.filters.account_memcmp_base58 {
+            filters.push(
+                yellowstone_grpc_proto::prelude::SubscribeRequestFilterAccountsFilter {
+                    filter: Some(
+                        yellowstone_grpc_proto::prelude::subscribe_request_filter_accounts_filter::Filter::Memcmp(
+                            yellowstone_grpc_proto::prelude::SubscribeRequestFilterAccountsFilterMemcmp {
+                                offset: 0,
+                                data: Some(
+                                    yellowstone_grpc_proto::prelude::subscribe_request_filter_accounts_filter_memcmp::Data::Base58(disc.clone()),
+                                ),
+                            },
+                        ),
+                    ),
+                },
+            );
+        }
         accounts.insert(
             "accounts".to_string(),
             SubscribeRequestFilterAccounts {
                 account: cfg.filters.account_addresses.clone(),
                 owner: cfg.filters.account_programs.clone(),
-                filters: Vec::new(),
+                filters,
                 nonempty_txn_signature: None,
                 ..Default::default()
             },
@@ -389,6 +408,16 @@ pub fn build_subscribe_request(
         );
     }
 
+    let mut accounts_data_slice = Vec::new();
+    if let Some(len) = cfg.filters.account_data_slice_len {
+        accounts_data_slice.push(
+            yellowstone_grpc_proto::prelude::SubscribeRequestAccountsDataSlice {
+                offset: 0,
+                length: len,
+            },
+        );
+    }
+
     Ok(SubscribeRequest {
         accounts,
         slots,
@@ -398,7 +427,7 @@ pub fn build_subscribe_request(
         blocks_meta,
         entry: HashMap::new(),
         commitment: Some(cfg.commitment.to_proto()),
-        accounts_data_slice: Vec::new(),
+        accounts_data_slice,
         ping: None,
         from_slot,
         ..Default::default()
