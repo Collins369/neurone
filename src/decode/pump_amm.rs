@@ -96,7 +96,7 @@ pub fn decode_swap_event(payload: &[u8], is_buy: bool) -> Option<DecodedSwap> {
     let protocol_fee_bps = r.u64()?;
     let protocol_fee = r.u64()?;
     let _quote_with_fee = r.u64()?;
-    let _user_quote_amount = r.u64()?;
+    let user_quote_amount = r.u64()?; // user_quote_amount_in (buy) / _out (sell)
     let pool = r.pubkey()?;
     let _user = r.pubkey()?;
     let _user_base_token_account = r.pubkey()?;
@@ -107,6 +107,23 @@ pub fn decode_swap_event(payload: &[u8], is_buy: bool) -> Option<DecodedSwap> {
     let _coin_creator_fee_bps = r.u64()?;
     let coin_creator_fee = r.u64().unwrap_or(0);
 
+    // Appended tail. `buy` carries ix_name before the appended virtual reserve;
+    // `sell` has no ix_name. Both end with a signed i128 virtual_quote_reserves
+    // followed by `can_boost, base_supply, holder_rewards_bps, holder_rewards`.
+    let mut ix_name = None;
+    if is_buy {
+        // track_volume(1) + 5 u64, then the ix_name string.
+        if r.take(1 + 8 * 5).is_some() {
+            ix_name = r.string();
+        }
+    }
+    // 4 u64 (cashback/buyback pairs), then the i128 virtual reserve.
+    let virtual_quote_reserve = if r.take(8 * 4).is_some() {
+        r.i128()
+    } else {
+        None
+    };
+
     Some(DecodedSwap {
         venue: Venue::PumpSwap,
         market_key: pool,
@@ -115,15 +132,17 @@ pub fn decode_swap_event(payload: &[u8], is_buy: bool) -> Option<DecodedSwap> {
         is_buy,
         base_amount,
         quote_amount,
+        user_quote_amount,
         base_reserve: Some(pool_base_reserves),
         quote_reserve: Some(pool_quote_reserves),
-        virtual_quote_reserve: None,
+        virtual_base_reserve: None,
+        virtual_quote_reserve,
         fee_quote: lp_fee
             .saturating_add(protocol_fee)
             .saturating_add(coin_creator_fee),
         fee_bps: Some(lp_fee_bps.saturating_add(protocol_fee_bps)),
         timestamp: Some(timestamp),
-        ix_name: None,
+        ix_name,
     })
 }
 

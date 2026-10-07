@@ -29,6 +29,7 @@ pub mod runtime;
 pub mod shard;
 pub mod shutdown;
 pub mod telemetry;
+pub mod validate;
 
 pub use config::Config;
 pub use engine::Engine;

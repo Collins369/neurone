@@ -24,6 +24,7 @@
 //!     for on-chain *buys* could not be established from public sources; see
 //!     `docs/MILESTONE_2_1_REPORT.md` (residual ≤ ~1 lamport's worth).
 
+use crate::decode::DecodedSwap;
 use crate::decode::Venue;
 use crate::events::MarketKey;
 use crate::market::{MarketState, Ratio, ReserveState};
@@ -54,6 +55,8 @@ pub enum QuoteError {
     InvalidFee,
     /// Integer overflow while computing.
     Overflow,
+    /// Instruction name not recognized (refuse to guess).
+    UnsupportedInstruction,
 }
 
 /// A quote result. All amounts are raw integer units (base token units /
@@ -236,6 +239,183 @@ fn quote_pumpfun(
 /// Convenience: market key helper for callers that only need identity.
 pub fn market_key(market: &MarketState) -> MarketKey {
     market.key
+}
+
+// ---------------------------------------------------------------------------
+// Reconciled protocol-parity formulas (M3)
+//
+// These operate on a decoded swap's own trade-time pre-state, so they can be
+// validated directly against the on-chain result recorded in the same event.
+// Semantics established by the docs/investigation reconciliation:
+//   * pump.fun events store POST-trade reserves  -> pre = post - delta
+//   * pump.swap events store PRE-trade reserves  -> pre = event reserves
+//   * pump.swap effective quote = raw_quote + signed virtual_quote_reserves
+// ---------------------------------------------------------------------------
+
+/// Protocol instruction that produced a swap.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Instruction {
+    /// Sell base tokens for quote.
+    Sell,
+    /// Exact quote-in buy (pump.fun `buy_exact_sol_in`/`buy_exact_quote_in`,
+    /// pump.swap `buy_exact_quote_in`).
+    BuyExactIn,
+    /// Token-target buy (`buy` / `buy_v2`): base amount specified.
+    BuyTokenTarget,
+}
+
+impl Instruction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Instruction::Sell => "sell",
+            Instruction::BuyExactIn => "buy_exact_in",
+            Instruction::BuyTokenTarget => "buy_token_target",
+        }
+    }
+}
+
+/// Classify a decoded swap from its venue + `ix_name` (+ side).
+pub fn classify(swap: &DecodedSwap) -> Result<Instruction, QuoteError> {
+    match swap.venue {
+        Venue::PumpFun => match swap.ix_name.as_deref() {
+            Some("sell") => Ok(Instruction::Sell),
+            Some("sell_v2") => Ok(Instruction::Sell),
+            Some("buy_exact_sol_in")
+            | Some("buy_exact_quote_in")
+            | Some("buy_exact_quote_in_v2") => Ok(Instruction::BuyExactIn),
+            Some("buy") | Some("buy_v2") => Ok(Instruction::BuyTokenTarget),
+            _ => Err(QuoteError::UnsupportedInstruction),
+        },
+        Venue::PumpSwap => {
+            if !swap.is_buy {
+                Ok(Instruction::Sell) // SellEvent carries no ix_name
+            } else {
+                match swap.ix_name.as_deref() {
+                    Some("buy_exact_quote_in") | Some("buy_exact_quote_in_v2") => {
+                        Ok(Instruction::BuyExactIn)
+                    }
+                    Some("buy") | Some("buy_v2") => Ok(Instruction::BuyTokenTarget),
+                    _ => Err(QuoteError::UnsupportedInstruction),
+                }
+            }
+        }
+    }
+}
+
+fn ceil_div(a: u128, b: u128) -> Option<u128> {
+    (b != 0).then(|| a.div_ceil(b))
+}
+
+/// A decoded swap's trade-time pre-state plus the observed result.
+#[derive(Clone, Copy, Debug)]
+pub struct SwapPreState {
+    pub instruction: Instruction,
+    /// Pre-trade base reserve (raw).
+    pub pre_base: u128,
+    /// Pre-trade quote reserve (raw or effective).
+    pub pre_quote: u128,
+    /// Quote amount the user supplied (exact-in) or the pool took in.
+    pub quote_input: u128,
+    /// Base amount the trade moved (the observed result for buys).
+    pub base_result: u128,
+    /// Quote amount the trade moved (the observed result for sells).
+    pub quote_result: u128,
+}
+
+/// Derive the trade-time pre-state from a decoded swap.
+pub fn swap_pre_state(swap: &DecodedSwap) -> Result<SwapPreState, QuoteError> {
+    let instruction = classify(swap)?;
+    match swap.venue {
+        Venue::PumpFun => {
+            // Event reserves are POST-trade; reverse the trade to get pre-state.
+            let vb = swap.virtual_base_reserve.ok_or(QuoteError::ZeroReserves)? as u128;
+            let vq = swap.virtual_quote_reserve.ok_or(QuoteError::ZeroReserves)?;
+            let delta_q = i128::from(swap.quote_amount);
+            let delta_b = i128::from(swap.base_amount);
+            let (pre_b, pre_q) = if swap.is_buy {
+                (vb as i128 + delta_b, vq - delta_q)
+            } else {
+                (vb as i128 - delta_b, vq + delta_q)
+            };
+            if pre_b <= 0 || pre_q <= 0 {
+                return Err(QuoteError::ZeroReserves);
+            }
+            Ok(SwapPreState {
+                instruction,
+                pre_base: pre_b as u128,
+                pre_quote: pre_q as u128,
+                quote_input: u128::from(swap.quote_amount),
+                base_result: u128::from(swap.base_amount),
+                quote_result: u128::from(swap.quote_amount),
+            })
+        }
+        Venue::PumpSwap => {
+            // Event reserves are PRE-trade. Effective quote = raw + signed virt.
+            let pre_base = u128::from(swap.base_reserve.ok_or(QuoteError::ZeroReserves)?);
+            let raw_quote = u128::from(swap.quote_reserve.ok_or(QuoteError::ZeroReserves)?);
+            let virt = swap.virtual_quote_reserve.unwrap_or(0);
+            let eff = (raw_quote as i128)
+                .checked_add(virt)
+                .ok_or(QuoteError::Overflow)?;
+            if eff < 0 {
+                return Err(QuoteError::ZeroReserves);
+            }
+            Ok(SwapPreState {
+                instruction,
+                pre_base,
+                pre_quote: eff as u128,
+                // Exact-quote-in uses the *user* quote amount (net); sells and
+                // token-target buys use the pool-side quote movement.
+                quote_input: if instruction == Instruction::BuyExactIn {
+                    u128::from(swap.user_quote_amount)
+                } else {
+                    u128::from(swap.quote_amount)
+                },
+                base_result: u128::from(swap.base_amount),
+                quote_result: u128::from(swap.quote_amount),
+            })
+        }
+    }
+}
+
+/// Predicted **pool-level** output for a decoded swap.
+///
+/// For sells this is the gross quote out; for buys it is the base out — the
+/// same quantity the event records, so it can be compared for exact parity.
+pub fn predict_swap(swap: &DecodedSwap) -> Result<u128, QuoteError> {
+    let s = swap_pre_state(swap)?;
+    let (pb, pq) = (s.pre_base, s.pre_quote);
+    if pb == 0 || pq == 0 {
+        return Err(QuoteError::ZeroReserves);
+    }
+    match s.instruction {
+        // Sell: base in -> quote out (priced against effective/virtual quote).
+        Instruction::Sell => k_out(pb, pq, s.base_result).ok_or(QuoteError::Overflow),
+        Instruction::BuyExactIn => {
+            let net = s.quote_input.checked_sub(1).ok_or(QuoteError::ZeroInput)?;
+            let den = pq.checked_add(net).ok_or(QuoteError::Overflow)?;
+            if den == 0 {
+                return Err(QuoteError::ZeroReserves);
+            }
+            Ok(pb.checked_mul(net).ok_or(QuoteError::Overflow)? / den)
+        }
+        Instruction::BuyTokenTarget => {
+            // pool took `quote_input` in, base out follows the same CP form.
+            k_out(pq, pb, s.quote_input).ok_or(QuoteError::Overflow)
+        }
+    }
+}
+
+/// Predicted quote required for a token-target buy (`buy`): the minimal quote
+/// such that the constant product yields `base_target` tokens (rounded up).
+pub fn predict_token_target_quote(swap: &DecodedSwap) -> Result<u128, QuoteError> {
+    let s = swap_pre_state(swap)?;
+    let (pb, pq) = (s.pre_base, s.pre_quote);
+    let target = s.base_result;
+    if target >= pb {
+        return Err(QuoteError::InsufficientLiquidity);
+    }
+    ceil_div(pq * target, pb - target).ok_or(QuoteError::Overflow)
 }
 
 #[cfg(test)]

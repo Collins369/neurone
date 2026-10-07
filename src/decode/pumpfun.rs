@@ -91,11 +91,11 @@ pub fn decode_trade_event(payload: &[u8]) -> Option<DecodedSwap> {
     let _user = r.pubkey()?;
     let timestamp = r.i64()?;
     let virtual_sol_reserves = r.u64()?;
-    let _virtual_token_reserves = r.u64()?;
+    let virtual_token_reserves = r.u64()?;
     let real_sol_reserves = r.u64()?;
     let real_token_reserves = r.u64()?;
 
-    // Optional fee tail: read defensively, keep whatever is present.
+    // Optional fee tail, then track_volume + 4 u64 counters, then `ix_name`.
     let mut fee_quote = 0u64;
     let mut creator_fee_quote = 0u64;
     let mut fee_bps = None;
@@ -111,6 +111,12 @@ pub fn decode_trade_event(payload: &[u8]) -> Option<DecodedSwap> {
             }
         }
     }
+    let mut ix_name = None;
+    if r.take(1 + 8 * 4).is_some() {
+        if let Some(name) = r.string() {
+            ix_name = Some(name);
+        }
+    }
 
     Some(DecodedSwap {
         venue: Venue::PumpFun,
@@ -120,13 +126,15 @@ pub fn decode_trade_event(payload: &[u8]) -> Option<DecodedSwap> {
         is_buy,
         base_amount: token_amount,
         quote_amount: sol_amount,
+        user_quote_amount: sol_amount,
         base_reserve: Some(real_token_reserves),
         quote_reserve: Some(real_sol_reserves),
+        virtual_base_reserve: Some(virtual_token_reserves),
         virtual_quote_reserve: Some(virtual_sol_reserves as i128),
         fee_quote: fee_quote.saturating_add(creator_fee_quote),
         fee_bps,
         timestamp: Some(timestamp),
-        ix_name: None,
+        ix_name,
     })
 }
 

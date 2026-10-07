@@ -1,0 +1,238 @@
+//! Live Yellowstone protocol-parity validation harness (M3).
+//!
+//! Runs the **real** Solami Yellowstone client + production decoder + reconciled
+//! quote formulas, and compares each predicted result against the on-chain
+//! result recorded in the same event. Reuses [`crate::ingest::solami`] and
+//! [`crate::quote`]; it does not route into shards (this is parity validation,
+//! not the trading path).
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::StreamExt;
+
+use crate::config::Config;
+use crate::decode::{DecodedSwap, Venue};
+use crate::error::Result;
+use crate::events::{normalize, EventKind, Normalized};
+use crate::ingest::solami::{self, Connector, TonicConnector};
+use crate::quote::{self, Instruction};
+
+/// Per-(venue, instruction) parity counters.
+#[derive(Default, Clone, Debug)]
+pub struct PathStats {
+    pub samples: u64,
+    pub exact: u64,
+    pub mismatches: u64,
+    pub errors: u64,
+    pub example_mismatch: Option<String>,
+    pub example_error: Option<String>,
+}
+
+/// Live validation outcome.
+#[derive(Clone, Debug, Default)]
+pub struct ValidationReport {
+    pub connected: bool,
+    pub updates: u64,
+    pub swaps: u64,
+    pub decode_ms: Vec<u64>,
+    pub quote_ns: Vec<u64>,
+    pub paths: BTreeMap<String, PathStats>,
+}
+
+impl ValidationReport {
+    fn path(&mut self, key: String) -> &mut PathStats {
+        self.paths.entry(key).or_default()
+    }
+
+    /// Render the parity matrix as text.
+    pub fn matrix(&self) -> String {
+        let mut out =
+            String::from("venue/instruction            samples  exact  mismatch  errors\n");
+        for (k, s) in &self.paths {
+            out.push_str(&format!(
+                "{:<28} {:>7} {:>6} {:>9} {:>7}\n",
+                k, s.samples, s.exact, s.mismatches, s.errors
+            ));
+        }
+        out
+    }
+
+    pub fn percentiles(&self, mut v: Vec<u64>) -> (u64, u64, u64) {
+        if v.is_empty() {
+            return (0, 0, 0);
+        }
+        v.sort_unstable();
+        let pick = |q: f64| {
+            v[(((v.len() as f64) * q).ceil() as usize)
+                .saturating_sub(1)
+                .min(v.len() - 1)]
+        };
+        (pick(0.50), pick(0.95), pick(0.99))
+    }
+}
+
+/// Validate live swaps for `seconds`.
+pub async fn run(config: &Config, seconds: u64) -> Result<ValidationReport> {
+    let token = solami::load_token()?;
+    let connector = TonicConnector::new(&config.ingest, token);
+    let request = solami::build_subscribe_request(&config.ingest, None)?;
+    let (_sink, mut stream) = connector.subscribe(request).await?;
+
+    let mut report = ValidationReport {
+        connected: true,
+        ..Default::default()
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(seconds);
+
+    loop {
+        let update = tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => break,
+            item = stream.next() => item,
+        };
+        let Some(Ok(update)) = update else { break };
+        report.updates += 1;
+
+        let t0 = crate::clock::now_ns();
+        let normalized = normalize(&update, t0);
+        let t1 = crate::clock::now_ns();
+        let Normalized::Event(event) = normalized else {
+            continue;
+        };
+        let EventKind::Transaction(tx) = &event.kind else {
+            continue;
+        };
+        report.decode_ms.push(((t1 - t0) / 1_000) as u64);
+        for swap in &tx.swaps {
+            report.swaps += 1;
+            let key = format!("{}/{}", swap.venue.as_str(), instruction_label(swap));
+            let tq = crate::clock::now_ns();
+            let outcome = evaluate(swap);
+            report
+                .quote_ns
+                .push((crate::clock::now_ns() - tq).min(u64::MAX as u128) as u64);
+            let path = report.path(key);
+            match outcome {
+                Ok(true) => {
+                    path.samples += 1;
+                    path.exact += 1;
+                }
+                Ok(false) => {
+                    path.samples += 1;
+                    path.mismatches += 1;
+                    if path.example_mismatch.is_none() {
+                        path.example_mismatch = Some(describe(swap));
+                    }
+                }
+                Err(e) => {
+                    path.errors += 1;
+                    if path.example_error.is_none() {
+                        path.example_error = Some(format!("{e:?}: {}", describe(swap)));
+                    }
+                }
+            }
+        }
+    }
+    Ok(report)
+}
+
+fn instruction_label(swap: &DecodedSwap) -> String {
+    quote::classify(swap)
+        .map(|i| i.as_str().to_string())
+        .unwrap_or_else(|_| {
+            format!(
+                "unknown({})",
+                swap.ix_name.clone().unwrap_or_else(|| "-".into())
+            )
+        })
+}
+
+/// Evaluate one swap against its own trade-time pre-state.
+///
+/// Returns `Ok(true)` for an exact integer match against the on-chain result.
+/// Coherence guard: the pump.fun `TradeEvent` has grown over time, and a
+/// subset of live payloads decodes to values that are impossible on-chain
+/// (e.g. `token_amount` above the fixed 1e15 supply, a zero reserve with a
+/// non-zero trade). Those are counted as `decoder_inconsistent`, never as
+/// formula mismatches.
+const PUMPFUN_MAX_SUPPLY: u64 = 1_000_000_000_000_000;
+
+fn coherent(swap: &DecodedSwap) -> bool {
+    match swap.venue {
+        Venue::PumpFun => {
+            swap.quote_amount > 0
+                && swap.base_amount > 0
+                && swap.base_amount <= PUMPFUN_MAX_SUPPLY
+                && swap.virtual_base_reserve.unwrap_or(0) > 0
+                && swap.virtual_quote_reserve.unwrap_or(0) > 0
+        }
+        Venue::PumpSwap => swap.quote_amount > 0 && swap.base_amount > 0,
+    }
+}
+
+fn evaluate(swap: &DecodedSwap) -> std::result::Result<bool, quote::QuoteError> {
+    if !coherent(swap) {
+        return Err(quote::QuoteError::ZeroReserves);
+    }
+    let instruction = quote::classify(swap)?;
+    Ok(match instruction {
+        Instruction::Sell => quote::predict_swap(swap)? == u128::from(swap.quote_amount),
+        Instruction::BuyExactIn => quote::predict_swap(swap)? == u128::from(swap.base_amount),
+        Instruction::BuyTokenTarget => {
+            // Token-target: the quote charged is the observed pool quote inflow.
+            quote::predict_token_target_quote(swap)? == u128::from(swap.quote_amount)
+        }
+    })
+}
+
+fn describe(swap: &DecodedSwap) -> String {
+    format!(
+        "venue={:?} ix={:?} buy={} base={} quote={} uq={} base_res={:?} quote_res={:?} virt_b={:?} virt_q={:?}",
+        swap.venue,
+        swap.ix_name,
+        swap.is_buy,
+        swap.base_amount,
+        swap.quote_amount,
+        swap.user_quote_amount,
+        swap.base_reserve,
+        swap.quote_reserve,
+        swap.virtual_base_reserve,
+        swap.virtual_quote_reserve
+    )
+}
+
+/// Convenience for the binary: run and render a text report.
+pub async fn run_to_text(config: &Config, seconds: u64) -> Result<String> {
+    let report = run(config, seconds).await?;
+    let (d50, d95, d99) = report.percentiles(report.decode_ms.clone());
+    let (q50, q95, q99) = report.percentiles(report.quote_ns.clone());
+    let (q50, q95, q99) = (
+        q50 as f64 / 1000.0,
+        q95 as f64 / 1000.0,
+        q99 as f64 / 1000.0,
+    );
+    let mut out = format!(
+        "connected={} updates={} swaps={}\n{}",
+        report.connected,
+        report.updates,
+        report.swaps,
+        report.matrix()
+    );
+    out.push_str(&format!(
+        "decode+normalize us p50={d50} p95={d95} p99={d99}\nquote us p50={q50:.3} p95={q95:.3} p99={q99:.3}\n"
+    ));
+    for (k, s) in &report.paths {
+        if let Some(ex) = &s.example_mismatch {
+            out.push_str(&format!("  example mismatch [{k}]: {ex}\n"));
+        }
+        if let Some(ex) = &s.example_error {
+            out.push_str(&format!("  example error [{k}]: {ex}\n"));
+        }
+    }
+    Ok(out)
+}
+
+/// Re-export for callers that want the Arc-based metrics (unused here).
+#[allow(dead_code)]
+fn _unused(_: Arc<()>) {}

@@ -100,7 +100,16 @@ fn run() -> anyhow::Result<()> {
             );
             Ok(())
         }
-        other => anyhow::bail!("unknown command `{other}` (expected run|bench|check)"),
+        "validate" => runtime.block_on(async {
+            let seconds: u64 = std::env::var("NEURONE_VALIDATE_SECONDS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(60);
+            let text = neurone::validate::run_to_text(&config, seconds).await?;
+            print!("{text}");
+            Ok::<(), anyhow::Error>(())
+        }),
+        other => anyhow::bail!("unknown command `{other}` (expected run|bench|check|validate)"),
     }
 }
 

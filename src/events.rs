@@ -323,13 +323,46 @@ fn decode_transaction_payloads(
     let Some(meta) = meta else {
         return (swaps, creates, rejected);
     };
+    // Anchor event discriminators are `sha256("event:<Name>")[..8]` — they are
+    // *name*-based, so two unrelated programs with an event called `TradeEvent`
+    // collide. Attribute every `Program data:` line to the program currently on
+    // the invocation stack and only decode events from known venue programs.
+    let mut program_stack: Vec<MarketKey> = Vec::new();
     for line in &meta.log_messages {
         if swaps.len() + creates.len() >= MAX_DECODED_EVENTS {
             break;
         }
+        // `Program data:` must be handled before the generic `Program ` branch.
+        let is_program_data = line.starts_with(PROGRAM_DATA_PREFIX);
+        if !is_program_data {
+            let Some(rest) = line.strip_prefix("Program ") else {
+                continue;
+            };
+            if let Some((id, _)) = rest.split_once(' ') {
+                if rest.contains(" invoke ") {
+                    if let Some(k) = MarketKey::from_base58(id) {
+                        program_stack.push(k);
+                    }
+                } else if rest.contains(" success") || rest.contains(" failed") {
+                    // Pop the matching frame (best-effort; logs are well-formed).
+                    if let Some(k) = MarketKey::from_base58(id) {
+                        if let Some(pos) = program_stack.iter().rposition(|p| *p == k) {
+                            program_stack.truncate(pos);
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         let Some(b64) = line.strip_prefix(PROGRAM_DATA_PREFIX) else {
             continue;
         };
+        // Only events emitted by a program we understand.
+        let owner = program_stack.last().copied();
+        let owned_by_venue = owner.map(|o| decode::is_venue_program(&o)).unwrap_or(false);
+        if !owned_by_venue {
+            continue;
+        }
         // Cheap pre-filter before allocating the base64 decode (~1.34x).
         if b64.len() > MAX_PROGRAM_DATA_LEN * 2 {
             continue;

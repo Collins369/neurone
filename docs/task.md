@@ -1,278 +1,596 @@
-# Task: Pump.fun + PumpSwap Documentation-First Reconciliation Investigation
+# Task: M3 — Yellowstone Live Protocol Parity Test
 
 ## Objective
 
-Run a fresh, thorough investigation of **Pump.fun** and **PumpSwap**, in this order:
+Now that the Pump.fun + PumpSwap documentation/reconciliation investigation is complete, test the **confirmed quote/parity paths directly through Solami Yellowstone gRPC**.
 
-1. Thoroughly search and study the **official Pump.fun and PumpSwap documentation/source material first**.
-2. Run a **new empirical/code/data investigation** of Pump.fun and PumpSwap.
-3. Make a **technical reconciliation** between the documentation findings and the fresh investigation findings.
+This task is about validating the complete live data path:
 
-This is **not an executive summary**. The deliverable must be a technical reconciliation based directly on the documentation research and the new investigation.
+```text
+Solami Yellowstone gRPC
+        ↓
+live account/event updates
+        ↓
+decoder
+        ↓
+trade-time state
+        ↓
+protocol + instruction identification
+        ↓
+exact integer quote engine
+        ↓
+compare against actual on-chain trade result
+        ↓
+telemetry + latency measurement
+```
 
-Do not jump into implementation or modify production quote/state logic.
+Do **not** reopen the previous documentation investigation unless the Yellowstone test produces a genuine contradiction.
 
-## Scope
+Do **not** implement trading/execution yet.
 
-Focus on:
-- exact BUY/SELL quote formulas
-- reserve semantics
-- virtual reserves / effective reserves
-- fee calculation and fee regimes
-- protocol fees and creator fees
-- input/output semantics
-- integer rounding (`floor`, `ceil`, adjustments)
-- `-1` / `+1` terms
-- Pump.fun bonding-curve state
-- PumpSwap AMM pool state
-- event fields and historical-state reconstruction
-- versioned/extended account layouts
-- historical versus current protocol behavior
-- what Yellowstone can and cannot reconstruct deterministically
+Do **not** redesign the Neurone architecture.
 
-Stay tightly focused on these questions.
+---
 
-# Part 1 — Documentation-First Research
+# 1. Source of Truth
 
-Before the new investigation, thoroughly search the **official first-party sources** for both protocols.
+Use the completed Pump.fun/PumpSwap reconciliation report as the protocol-parity baseline.
+
+The report established the following production-certifiable quote paths:
 
 ### Pump.fun
-Prioritize:
-- official Pump program repository/documentation
-- official IDL
-- official instruction docs
-- official SDK/source where formulas or fee behavior are defined
-- official account/state definitions
-- official event definitions
-- official breaking-change/version documentation
+
+1. SELL
+2. `buy_exact_sol_in`
+3. `buy_exact_quote_in`
 
 ### PumpSwap
-Prioritize:
-- official PumpSwap repository/documentation
-- official IDL
-- official instruction docs
-- official SDK/source
-- official account/state definitions
-- official event definitions
-- official fee documentation
-- official documentation on virtual quote reserves and pool versions
 
-Use current official sources and historical/older layout documentation where relevant.
+1. SELL
+2. `buy_exact_quote_in`
+3. `buy` when the quote inflow required by the formula is observable
 
-## Documentation extraction requirements
+The reconciliation also established:
 
-For every important finding, record:
-- source/file/document
-- relevant instruction/account/event
-- exact field names
-- exact formula where documented
-- fee parameters
-- rounding direction
-- state semantics
-- whether it is current-only or explains historical layouts
-- explicit versioning/backwards-compatibility behavior
+- PumpSwap effective quote reserve:
 
-Do not paraphrase away important mathematical details.
+```text
+q_eff = raw_quote_reserve + event.virtual_quote_reserves
+```
 
-If an official source explicitly gives a formula, preserve it closely enough to compare against the empirical investigation.
+- Pump.fun exact-in BUY:
 
-If official sources conflict across versions, record the conflict rather than silently choosing one.
+```text
+tokens_out =
+floor(
+    virtual_base_reserve * (input - 1)
+    /
+    (virtual_quote_reserve + input - 1)
+)
+```
 
-# Part 2 — Fresh Investigation
+- PumpSwap exact-in BUY:
 
-After the documentation pass, run a fresh investigation of the existing Pump.fun and PumpSwap evidence/code/data.
+```text
+base_out =
+floor(
+    base_reserve * (quote_input - 1)
+    /
+    (effective_quote_reserve + quote_input - 1)
+)
+```
 
-Re-run or reproduce the relevant investigation rather than relying only on the previous report.
+- PumpSwap SELL:
 
-## Pump.fun
+```text
+quote_out =
+floor(
+    effective_quote_reserve * base_input
+    /
+    (base_reserve + base_input)
+)
+```
 
-### SELL
-Investigate:
-- reserve interpretation
-- exact token → SOL calculation
-- fee treatment
-- rounding
-- creator fee treatment
-- protocol fee treatment
-- whether the observed formula exactly reproduces TradeEvent/post-trade values
+Use the exact formulas and state semantics established by the reconciliation. Do not replace them with floating-point approximations.
 
-### BUY
-Investigate each instruction separately:
-- `buy_exact_sol_in`
-- `buy_exact_quote_in`
-- token-target `buy`
+---
 
-For each determine:
-- exact input/output semantics
-- formula
-- fee base
-- rounding
-- `-1` / `+1` adjustments
-- predicted vs observed output
-- exact matches vs mismatches
+# 2. First Inspect Existing Neurone Implementation
 
-Do not combine the three BUY variants unless the evidence proves equivalence.
+Before writing code:
 
-## PumpSwap
+1. Inspect the current Neurone repository.
+2. Identify:
+   - Yellowstone client
+   - subscription code
+   - protobuf/IDL definitions
+   - normalizer
+   - market-state engine
+   - sharding
+   - existing quote engine
+   - existing Pump.fun/PumpSwap decoders
+   - existing tests
+   - telemetry/performance infrastructure
+3. Determine what M1/M2/M2.1 already implemented.
+4. Reuse existing architecture where appropriate.
 
-### SELL
-Investigate:
-- raw base reserve
-- raw quote reserve
-- `virtual_quote_reserves`
-- effective quote reserve
-- fee regime
-- creator/protocol fees where applicable
-- exact rounding
-- event-state vs account-state reconstruction
-- historical pool layouts/version lengths
+Do not duplicate an existing Yellowstone client or quote engine.
 
-### BUY
-Investigate:
-- exact input semantics
-- reserve semantics
-- effective quote reserve
-- fee calculation
-- fee regimes
-- rounding
-- event fields
-- whether exact historical state is observable
+Do not create a parallel architecture merely for this task.
 
-Independently investigate the observed regimes:
+---
+
+# 3. Yellowstone Connection Test
+
+Connect to the existing Solami Yellowstone gRPC endpoint/configuration already used by Neurone.
+
+Verify:
+
+- connection succeeds
+- authentication works
+- subscription remains alive
+- updates are continuously received
+- reconnect behavior works if already implemented
+- no polling is introduced into the hot path
+
+Use the project's existing environment/configuration conventions.
+
+Do not hardcode credentials.
+
+Do not print credentials or tokens into logs.
+
+---
+
+# 4. Live Yellowstone Data Path
+
+Build or complete the smallest path necessary to observe the relevant Pump.fun and PumpSwap state/events directly from Yellowstone.
+
+The hot path should be:
+
+```text
+Yellowstone update
+    ↓
+decode
+    ↓
+normalize
+    ↓
+identify protocol/instruction
+    ↓
+obtain required trade-time state
+    ↓
+quote
+```
+
+Keep this deterministic.
+
+Do not introduce:
+
+- LLMs
+- narrative analysis
+- social data
+- REST polling
+- sequential token scanning
+- unnecessary RPC requests
+- database writes in the hot path
+
+Async telemetry may run alongside the hot path.
+
+---
+
+# 5. Pump.fun Yellowstone Validation
+
+Test the following independently.
+
+## 5.1 Pump.fun SELL
+
+For every usable observed SELL:
+
+1. Decode the relevant bonding curve state.
+2. Determine the correct trade-time pre-state.
+3. Decode the trade/event.
+4. Calculate the expected gross quote output.
+5. Apply the correct observed/applicable fee state.
+6. Compare with the actual transaction/event result.
+
+Record:
+
+- signature
+- mint
+- instruction
+- relevant reserves
+- input amount
+- fee bps
+- calculated output
+- observed output
+- difference
+- exact/non-exact classification
+
+Target:
+
+**100% exact for valid ground-truth samples.**
+
+---
+
+## 5.2 `buy_exact_sol_in`
+
+Validate:
+
+```text
+tokens_out =
+floor(
+    virtual_base_reserve * (sol_in - 1)
+    /
+    (virtual_quote_reserve + sol_in - 1)
+)
+```
+
+Ensure the `sol_in` value and reserve state correspond to the correct trade-time state.
+
+Target:
+
+**100% exact.**
+
+---
+
+## 5.3 `buy_exact_quote_in`
+
+Validate the corresponding exact-quote-input path using the reconciled integer formula and fee semantics.
+
+Target:
+
+**100% exact.**
+
+---
+
+# 6. PumpSwap Yellowstone Validation
+
+## 6.1 Effective Quote Reserve
+
+This is a critical test.
+
+For every relevant PumpSwap event:
+
+```text
+effective_quote_reserve =
+raw_quote_reserve +
+event.virtual_quote_reserves
+```
+
+Verify that the **event's trade-time virtual reserve** is used rather than a later/current account value.
+
+Explicitly test historical/nonzero virtual-reserve cases.
+
+The previous M2.2B `(20,5)` issue was resolved by using the event-time value. Make sure the live Yellowstone implementation does not regress this.
+
+---
+
+## 6.2 PumpSwap SELL
+
+Validate:
+
+```text
+quote_out =
+floor(
+    effective_quote_reserve * base_in
+    /
+    (base_reserve + base_in)
+)
+```
+
+Test across the observed dynamic fee regimes:
+
 - `(25,5)`
 - `(2,93)`
 - `(20,5)`
 
-Do not assume these are the same protocol configuration merely because they are pairs of fee numbers.
+Target:
 
-# Part 3 — Documentation ↔ Investigation Reconciliation
+**100% exact for valid ground-truth samples.**
 
-For every major question explicitly compare:
+---
 
-**A. What the official documentation says**
+## 6.3 PumpSwap `buy_exact_quote_in`
 
-vs.
+Validate the exact-input formula:
 
-**B. What the fresh investigation observes**
+```text
+base_out =
+floor(
+    base_reserve * (quote_input - 1)
+    /
+    (effective_quote_reserve + quote_input - 1)
+)
+```
 
-vs.
+Target:
 
-**C. Whether they agree**
+**100% exact.**
 
-Use classifications such as:
-- `CONFIRMED — docs and investigation agree`
-- `DOCS EXPLAIN INVESTIGATION — previous uncertainty resolved`
-- `INVESTIGATION SUPPORTS DOCS BUT STATE DEPENDENCY REMAINS`
-- `DOCS AND INVESTIGATION DISAGREE`
-- `DOCUMENTATION INSUFFICIENT`
-- `INVESTIGATION INSUFFICIENT`
-- `HISTORICAL STATE NOT RECONSTRUCTABLE FROM OBSERVED DATA`
-- `FORMULA KNOWN, REQUIRED INPUT STATE UNKNOWN`
+---
 
-Do not force reconciliation where evidence does not support one.
+## 6.4 PumpSwap `buy`
 
-# Specific Reconciliation Questions
+Validate the token-target/base-output direction separately.
 
-## Pump.fun
+Do not accidentally treat it as `buy_exact_quote_in`.
 
-1. Are the observed `-1` / `+1` terms actually documented by first-party sources?
-2. Which exact BUY instruction uses which formula?
-3. Are `buy_exact_sol_in` and `buy_exact_quote_in` modeled with the correct fee-adjusted input?
-4. Is token-target `buy` genuinely unresolved, or does official documentation explain the previous mismatch?
-5. Are creator/protocol fees applied to the correct base?
-6. Are mismatches caused by wrong formula, wrong fee state, wrong reserve state, wrong rounding, wrong instruction semantics, or missing historical state?
-7. Does current official documentation/implementation explain the empirical match rates previously observed?
+If the quote inflow can be reconstructed exactly from Yellowstone-observable state, validate the resulting quote/output.
 
-## PumpSwap
+If a required input cannot be reconstructed from Yellowstone alone, document the exact missing state instead of inventing it.
 
-1. Does official documentation define effective quote reserves as raw quote reserve plus signed `virtual_quote_reserves`?
-2. Does it state whether BUY and SELL both use effective quote reserves?
-3. Are `virtual_quote_reserves` exposed in pool state and/or trade events?
-4. If exposed in events, does that resolve the previous conclusion that historical virtual/adjustment state was unavailable?
-5. What exactly explains the `(20,5)` residual and observed ±1 differences?
-6. Are `(25,5)`, `(2,93)`, and `(20,5)` different fee configurations, historical states, or something else?
-7. Does official documentation explain PumpSwap BUY sufficiently to determine the exact formula?
-8. If PumpSwap BUY remains unresolved, identify the exact missing variable/state instead of simply labeling the whole BUY path unknown.
-9. Can the exact historical trade be reconstructed from Yellowstone alone for each supported path?
+---
 
-# Required Output
+# 7. Ground Truth
 
-Produce a technical reconciliation report, not an executive summary.
+Ground truth must come from the actual Solana transaction/event/account state.
 
-Recommended structure:
+For each test:
 
-## 1. Documentation Findings
-### Pump.fun
-### PumpSwap
+```text
+Yellowstone-observed inputs
+        ↓
+Neurone quote
+        ↓
+actual on-chain result
+```
 
-## 2. Fresh Investigation Findings
-### Pump.fun SELL
-### Pump.fun BUY
-- buy_exact_sol_in
-- buy_exact_quote_in
-- buy
-### PumpSwap SELL
-### PumpSwap BUY
+Compare integer values exactly.
 
-## 3. Documentation ↔ Investigation Reconciliation
-Use a table where useful:
+Do not use approximate percentage error as the primary parity test.
 
-| Topic | Official documentation | Fresh investigation | Reconciliation | Status |
-|---|---|---|---|---|
+A difference of `1` lamport/token unit is still a mismatch unless the protocol formula explicitly permits that rounding behavior.
 
-Do not compress the table so much that mathematical details disappear.
+---
 
-## 4. Resolved Questions
+# 8. Yellowstone-Only Requirement
 
-List exactly what the new work resolves compared with the previous investigation.
+Determine explicitly which quote paths can be reconstructed from Yellowstone alone.
 
-## 5. Remaining Contradictions / Unknowns
+For each path classify:
 
-For every unresolved issue state:
-- what is known
-- what is unknown
-- what evidence was checked
-- what exact missing state/information prevents closure
+- `YELLOWSTONE-ONLY EXACT`
+- `YELLOWSTONE-ONLY BUT STATE-DEPENDENT`
+- `REQUIRES RPC`
+- `NOT CURRENTLY RECONSTRUCTABLE`
 
-## 6. Protocol-Parity Consequences
+The goal is to maximize the first category.
 
-Only state consequences directly supported by the reconciliation.
+Do not quietly fall back to RPC.
 
-Distinguish:
-- exact and production-certifiable
-- exact only under observable-state conditions
-- empirically matching but not formally documented
-- not certifiable
+If RPC is used for **ground truth validation only**, clearly separate it from the production/hot path.
 
-## 7. Source Register
+---
 
-List the official Pump.fun and PumpSwap sources actually inspected, including repository/file/document names and relevant sections/fields.
+# 9. Parallelism Requirement
 
-# Important Rules
+This test must preserve Neurone's intended architecture.
 
-1. **Documentation first.** Do not begin by reading only the old investigation and then searching for docs that fit it.
-2. Use first-party sources wherever possible.
-3. Third-party sources are supplementary only and must be clearly labeled.
-4. Do not treat an SDK implementation as authoritative merely because it matches observed data; distinguish implementation evidence from formal protocol documentation.
-5. Do not silently overwrite or reinterpret previous findings.
-6. If new evidence changes a previous conclusion, explicitly explain why.
-7. Preserve exact formulas and integer arithmetic.
-8. Do not use floating-point approximations for protocol formulas.
-9. Separate current protocol behavior from historical behavior.
-10. Separate observable state from inferred state.
-11. Do not turn an unresolved issue into a speculative explanation.
-12. Do not make production code changes as part of this task unless needed to reproduce an investigation; isolate and identify any such changes.
-13. Do not produce an executive summary as the primary deliverable.
-14. Make the report detailed enough that another engineer can trace each reconciliation claim back to both official documentation and fresh empirical evidence.
+Do not implement:
 
-## Final Deliverable
+```text
+receive token A
+→ finish A
+→ receive token B
+→ finish B
+```
 
-Write the completed report to:
+Instead verify that independent markets can be processed concurrently:
 
-`task.md`
+```text
+Yellowstone
+    ↓
+normalizer
+    ↓
+hash(pool/mint)
+    ↓
+parallel shards
+ ├── market A
+ ├── market B
+ ├── market C
+ └── market N
+```
 
-If the repository already has a suitable investigation/report directory, use it only if consistent with the existing project structure; otherwise use the requested `task.md` location.
+The quote calculation itself should remain deterministic and extremely small.
 
-Do not stop after documentation research. The task is complete only after:
+Measure whether decoding/state updates or locking become bottlenecks.
 
-**official docs → fresh investigation → reconciliation → task.md**
+---
+
+# 10. Latency Measurement
+
+Measure at least:
+
+1. Yellowstone message arrival
+2. decode start/end
+3. normalization
+4. state update
+5. protocol/instruction identification
+6. quote calculation
+7. ground-truth comparison where applicable
+
+Report:
+
+- p50
+- p95
+- p99
+- throughput
+- error/drop rate
+
+Do not contaminate hot-path latency measurements with disk/database logging.
+
+Telemetry should be asynchronous where possible.
+
+---
+
+# 11. Required Test Matrix
+
+Create a matrix similar to:
+
+| Protocol | Instruction | State Source | Formula | Samples | Exact | Mismatch | Yellowstone-only |
+|---|---|---|---|---:|---:|---:|---|
+| Pump.fun | SELL | Yellowstone | ... | ... | ... | ... | ... |
+| Pump.fun | buy_exact_sol_in | Yellowstone | ... | ... | ... | ... | ... |
+| Pump.fun | buy_exact_quote_in | Yellowstone | ... | ... | ... | ... | ... |
+| PumpSwap | SELL | Yellowstone | ... | ... | ... | ... | ... |
+| PumpSwap | buy_exact_quote_in | Yellowstone | ... | ... | ... | ... | ... |
+| PumpSwap | buy | Yellowstone | ... | ... | ... | ... | ... |
+
+Also include dynamic fee regimes where relevant.
+
+---
+
+# 12. Failure Classification
+
+Every mismatch must be classified.
+
+Use:
+
+- decoder error
+- wrong account layout
+- wrong instruction identification
+- wrong trade-time state
+- wrong fee state
+- wrong reserve semantics
+- wrong event interpretation
+- formula error
+- rounding error
+- multi-event transaction ambiguity
+- missing Yellowstone field/state
+- genuine unexplained protocol behavior
+
+Do not simply report "quote mismatch."
+
+---
+
+# 13. Regression Protection
+
+Add deterministic tests for every parity rule that is successfully validated.
+
+Especially protect:
+
+- Pump.fun `-1`
+- PumpSwap `-1`
+- PumpSwap signed virtual quote reserves
+- event-time virtual reserve versus current account reserve
+- dynamic fee regimes
+- exact integer arithmetic
+
+Do not use floating point.
+
+Do not remove existing tests.
+
+Run the existing relevant test suite after changes.
+
+---
+
+# 14. Production-Code Boundary
+
+This task is a **live Yellowstone validation milestone**, not the final trading engine.
+
+Do NOT implement:
+
+- automatic trade execution
+- Beam submission
+- TP/SL execution
+- capital allocation
+- autonomous strategy changes
+
+The output should prove that Neurone can observe and calculate correctly from Yellowstone before execution is added.
+
+---
+
+# 15. Deliverable
+
+Produce a detailed technical report after the test.
+
+Include:
+
+## 1. Existing Architecture Used
+
+What M1/M2/M2.1 components were reused.
+
+## 2. Yellowstone Connection
+
+Endpoint/configuration, subscription type, filters, connection behavior.
+
+Do not expose credentials.
+
+## 3. Live Data Path
+
+Exact path from Yellowstone update to quote result.
+
+## 4. Pump.fun Results
+
+Separate results for:
+
+- SELL
+- `buy_exact_sol_in`
+- `buy_exact_quote_in`
+
+## 5. PumpSwap Results
+
+Separate results for:
+
+- SELL
+- `buy_exact_quote_in`
+- `buy`
+
+## 6. Yellowstone-Only Assessment
+
+Clearly identify which paths are truly reconstructable without RPC.
+
+## 7. Exact Parity Matrix
+
+Include sample counts, exact counts, mismatches, and mismatch classifications.
+
+## 8. Latency / Throughput
+
+Include p50/p95/p99 and throughput.
+
+## 9. Problems Found
+
+Only actual problems discovered during the live test.
+
+## 10. Changes Made
+
+List code/tests/config changes precisely.
+
+## 11. Final M3 Status
+
+Classify:
+
+- `PASS`
+- `PASS WITH EXCLUSIONS`
+- `FAIL`
+
+Explain why.
+
+---
+
+# Critical Rules
+
+1. Do not reopen the already-completed documentation investigation unless Yellowstone produces contradictory evidence.
+2. Do not blindly trust the old implementation.
+3. Do not blindly trust the old report either; validate it through live Yellowstone.
+4. Do not change formulas merely because a sample mismatches.
+5. Trace mismatches to state, decoding, fees, instruction semantics, or formula before changing anything.
+6. Keep Pump.fun and PumpSwap logic separate.
+7. Keep each instruction variant separate.
+8. Use integer arithmetic only.
+9. Never use floating point for protocol quotes.
+10. Never silently fall back to RPC in the production path.
+11. RPC may be used only as an explicit ground-truth/reference source during validation.
+12. Do not introduce unnecessary architecture.
+13. Preserve Neurone's parallel/sharded design.
+14. Do not implement trading/execution yet.
+15. If all validated paths pass, stop. Do not create another open-ended investigation.
+
+## Completion Condition
+
+The task is complete when we have empirically demonstrated:
+
+**Solami Yellowstone → live decode → trade-time state → exact protocol quote → on-chain parity**
+
+for every supported path that can be reconstructed from Yellowstone, with explicit exclusions for anything that cannot.
+
+Write the final report to the repository's existing investigation/report location. Do not overwrite the source blueprint.

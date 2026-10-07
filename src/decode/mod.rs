@@ -81,17 +81,23 @@ pub struct DecodedSwap {
     pub base_mint: Option<MarketKey>,
     pub quote_mint: Option<MarketKey>,
     pub is_buy: bool,
+    /// Base-token amount moved by the trade (pool-side).
     pub base_amount: u64,
+    /// Quote amount moved by the pool (gross of fees).
     pub quote_amount: u64,
+    /// Quote amount the user actually paid/received (net of fees), when known.
+    pub user_quote_amount: u64,
     pub base_reserve: Option<u64>,
     pub quote_reserve: Option<u64>,
+    /// Synthetic base reserve (pump.fun curve), when known.
+    pub virtual_base_reserve: Option<u64>,
     pub virtual_quote_reserve: Option<i128>,
     /// Fees in raw quote units (protocol + LP + creator where known).
     pub fee_quote: u64,
     /// Total fee in basis points, when the event exposes it.
     pub fee_bps: Option<u64>,
     pub timestamp: Option<i64>,
-    /// Instruction/log name, when the event carries one (pump.swap).
+    /// Instruction name carried by the event (`ix_name`).
     pub ix_name: Option<String>,
 }
 
