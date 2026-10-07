@@ -146,6 +146,8 @@ pub struct ValidationReport {
     pub curves_cached: usize,
     pub curve_corroborations: u64,
     pub curve_corroborated: u64,
+    /// Why the pre-state gate rejected a trade (reason -> count).
+    pub unsupported_reasons: BTreeMap<&'static str, u64>,
 }
 
 impl ValidationReport {
@@ -250,7 +252,9 @@ pub async fn run(config: &Config, seconds: u64) -> Result<ValidationReport> {
                     let contig = last_event
                         .get(&swap.market_key)
                         .map(|(slot, vb, vq)| {
-                            *slot < tx.slot && *vb == s.pre_base && (*vq as u128) == s.pre_quote
+                            // `<=`: multiple trades can share a slot; the
+                            // post-state equality is the real evidence.
+                            *slot <= tx.slot && *vb == s.pre_base && (*vq as u128) == s.pre_quote
                         })
                         .unwrap_or(false);
                     // (b) bonding-curve account state strictly older than the trade.
@@ -265,8 +269,32 @@ pub async fn run(config: &Config, seconds: u64) -> Result<ValidationReport> {
                     } else if !matches!(quote::classify(swap), Ok(Instruction::BuyExactIn)) {
                         // SELL / token-target require corroborated pre-state.
                         corroborated = false;
+                        let reason = if !last_event.contains_key(&swap.market_key) {
+                            "no_previous_event_observed"
+                        } else if !contig {
+                            "previous_event_not_contiguous"
+                        } else if !cache.curves.contains_key(&swap.market_key) {
+                            "no_account_state_cached"
+                        } else if cache
+                            .curves
+                            .get(&swap.market_key)
+                            .and_then(|h| h.pre_state(tx.slot))
+                            .is_none()
+                        {
+                            "account_state_not_older_than_trade"
+                        } else {
+                            "account_state_mismatch"
+                        };
+                        *report.unsupported_reasons.entry(reason).or_insert(0) += 1;
                     }
-                    last_event.insert(swap.market_key, (tx.slot, s.pre_base, s.pre_quote as i128));
+                    // Store the event's POST-trade state (its own stored virtual
+                    // reserves), which is the pre-state of the next trade on
+                    // this curve.
+                    if let (Some(vb), Some(vq)) =
+                        (swap.virtual_base_reserve, swap.virtual_quote_reserve)
+                    {
+                        last_event.insert(swap.market_key, (tx.slot, u128::from(vb), vq));
+                    }
                 }
             }
             let tq = crate::clock::now_ns();
@@ -403,6 +431,12 @@ pub async fn run_to_text(config: &Config, seconds: u64) -> Result<String> {
     out.push_str(&format!(
         "decode+normalize us p50={d50} p95={d95} p99={d99}\nquote us p50={q50:.3} p95={q95:.3} p99={q99:.3}\n"
     ));
+    let reasons: Vec<String> = report
+        .unsupported_reasons
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    out.push_str(&format!("unsupported reasons: {}\n", reasons.join(" ")));
     for (k, s) in &report.paths {
         if let Some(ex) = &s.example_mismatch {
             out.push_str(&format!("  example mismatch [{k}]: {ex}\n"));
