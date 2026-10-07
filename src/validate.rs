@@ -146,6 +146,8 @@ pub struct ValidationReport {
     pub curves_cached: usize,
     pub curve_corroborations: u64,
     pub curve_corroborated: u64,
+    /// Transactions carrying a pump.fun sweep (reserve mutation) instruction.
+    pub reserve_mutations_seen: u64,
     /// Why the pre-state gate rejected a trade (reason -> count).
     pub unsupported_reasons: BTreeMap<&'static str, u64>,
 }
@@ -240,6 +242,9 @@ pub async fn run(config: &Config, seconds: u64) -> Result<ValidationReport> {
         let EventKind::Transaction(tx) = &event.kind else {
             continue;
         };
+        if tx.has_reserve_mutation {
+            report.reserve_mutations_seen += 1;
+        }
         for swap in &tx.swaps {
             report.swaps += 1;
             let key = format!("{}/{}", swap.venue.as_str(), instruction_label(swap));
@@ -417,10 +422,11 @@ pub async fn run_to_text(config: &Config, seconds: u64) -> Result<String> {
         q99 as f64 / 1000.0,
     );
     let mut out = format!(
-        "connected={} updates={} swaps={} curve_updates={} curve_startup={} curves_cached={} acct_corroborations={} acct_corroborated={}\n{}",
+        "connected={} updates={} swaps={} reserve_mutations_seen={} curve_updates={} curve_startup={} curves_cached={} acct_corroborations={} acct_corroborated={}\n{}",
         report.connected,
         report.updates,
         report.swaps,
+        report.reserve_mutations_seen,
         report.curve_updates,
         report.curve_startup_updates,
         report.curves_cached,

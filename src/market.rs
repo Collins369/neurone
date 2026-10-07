@@ -39,6 +39,10 @@ pub enum ReserveState {
     Unknown,
     Known,
     Stale,
+    /// A non-trade reserve mutation (e.g. a fee sweep) was observed and the
+    /// market state has not yet been re-established from a fresh authoritative
+    /// source. Never quotable.
+    Invalidated,
 }
 
 /// An exact rational price: `num / den` raw quote units per raw base unit.
@@ -227,6 +231,12 @@ pub struct MarketState {
     pub last_reserve_slot: u64,
     pub last_reserve_timestamp: Option<i64>,
     pub last_reserve_signature: Option<[u8; 64]>,
+    /// Monotonic per-market state version; bumped on every applied change and
+    /// on invalidation. An armed trade must record the version it armed from.
+    pub state_version: u64,
+    /// Slot of the most recent non-trade reserve mutation that invalidated the
+    /// state, if any. Cleared by a fresh account update at `slot >= this`.
+    pub invalidated_at_slot: Option<u64>,
 
     // Instrumentation only (monotonic ns); excluded from equality.
     pub first_seen_ns: u128,
@@ -273,6 +283,8 @@ impl MarketState {
             last_reserve_slot: 0,
             last_reserve_timestamp: None,
             last_reserve_signature: None,
+            state_version: 0,
+            invalidated_at_slot: None,
             first_seen_ns: now_ns,
             last_update_ns: now_ns,
         }
@@ -283,6 +295,13 @@ impl MarketState {
     pub fn apply_account(&mut self, ev: &AccountUpdate, now_ns: u128) -> bool {
         if self.account_updates > 0 && ev.write_version <= self.write_version {
             return false;
+        }
+        // A fresh authoritative account update at or after an invalidation
+        // re-establishes valid state (deterministic by the account's own slot).
+        if let Some(inv) = self.invalidated_at_slot {
+            if ev.slot >= inv {
+                self.invalidated_at_slot = None;
+            }
         }
         self.owner = ev.owner.or(self.owner);
         self.last_slot = self.last_slot.max(ev.slot);
@@ -295,7 +314,20 @@ impl MarketState {
         if let Some(decoded) = &ev.decoded {
             self.apply_decoded_account(decoded);
         }
+        self.state_version = self.state_version.wrapping_add(1);
         true
+    }
+
+    /// Mark the market state invalid after a non-trade reserve mutation at
+    /// `slot`. The state must not be quoted until re-established by a fresh
+    /// authoritative update at a slot `>= slot`.
+    pub fn invalidate(&mut self, slot: u64) {
+        self.invalidated_at_slot = Some(match self.invalidated_at_slot {
+            Some(s) => s.max(slot),
+            None => slot,
+        });
+        self.state_version = self.state_version.wrapping_add(1);
+        self.last_update_ns = crate::clock::now_ns();
     }
 
     fn apply_decoded_account(&mut self, d: &DecodedAccount) {
@@ -355,7 +387,9 @@ impl MarketState {
 
     /// Whether the current reserve state is fresh enough to quote from.
     pub fn reserve_state(&self, current_slot: u64, stale_slots: u64) -> ReserveState {
-        if !self.reserves_known {
+        if self.invalidated_at_slot.is_some() {
+            ReserveState::Invalidated
+        } else if !self.reserves_known {
             ReserveState::Unknown
         } else if current_slot.saturating_sub(self.last_reserve_slot) > stale_slots {
             ReserveState::Stale
@@ -526,6 +560,8 @@ impl PartialEq for MarketState {
             && self.last_reserve_slot == other.last_reserve_slot
             && self.last_reserve_timestamp == other.last_reserve_timestamp
             && self.last_reserve_signature == other.last_reserve_signature
+            && self.state_version == other.state_version
+            && self.invalidated_at_slot == other.invalidated_at_slot
     }
 }
 

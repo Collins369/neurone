@@ -78,6 +78,7 @@ fn swap_event(sig: u8, slot: u64, s: DecodedSwap) -> NormalizedEvent {
         swaps: vec![s],
         creates: Vec::new(),
         decode_rejected: 0,
+        has_reserve_mutation: false,
     }))
 }
 
@@ -305,6 +306,7 @@ async fn created_markets_are_seeded_from_create_event() {
                 swaps: Vec::new(),
                 creates: vec![created],
                 decode_rejected: 0,
+                has_reserve_mutation: false,
             },
         )))
         .await

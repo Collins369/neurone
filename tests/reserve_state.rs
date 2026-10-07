@@ -51,6 +51,7 @@ fn tx_event(market: MarketKey, slot: u64, sig: u8, s: DecodedSwap) -> Normalized
         swaps: vec![s],
         creates: Vec::new(),
         decode_rejected: 0,
+        has_reserve_mutation: false,
     }))
 }
 

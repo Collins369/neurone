@@ -175,6 +175,17 @@ impl Shard {
                     }
                     EventKind::Transaction(t) => {
                         self.metrics.add_decode_rejected(t.decode_rejected);
+                        // Non-trade reserve mutation (pump.fun fee sweep):
+                        // invalidate every market this transaction touched so
+                        // stale state cannot be quoted or executed against.
+                        if t.has_reserve_mutation {
+                            for key in &keys {
+                                if let Some(market) = self.markets.get_mut(key) {
+                                    market.invalidate(t.slot);
+                                    self.metrics.incr_reserve_invalidation();
+                                }
+                            }
+                        }
                         // Markets created by this transaction.
                         for created in &t.creates {
                             let market = self.market_mut(created.market_key, now);

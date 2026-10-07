@@ -87,6 +87,7 @@ pub struct Metrics {
     pub(crate) decode_rejected: AtomicU64,
     pub(crate) volume_updates: AtomicU64,
     pub(crate) stale_events: AtomicU64,
+    pub(crate) reserve_invalidations: AtomicU64,
     pub(crate) swaps_pumpfun: AtomicU64,
     pub(crate) swaps_pumpswap: AtomicU64,
     pub(crate) invalid_events: AtomicU64,
@@ -113,6 +114,7 @@ pub struct MetricsSnapshot {
     pub decode_rejected: u64,
     pub volume_updates: u64,
     pub stale_events: u64,
+    pub reserve_invalidations: u64,
     pub swaps_pumpfun: u64,
     pub swaps_pumpswap: u64,
     pub invalid_events: u64,
@@ -160,6 +162,7 @@ impl Metrics {
             decode_rejected: AtomicU64::new(0),
             volume_updates: AtomicU64::new(0),
             stale_events: AtomicU64::new(0),
+            reserve_invalidations: AtomicU64::new(0),
             swaps_pumpfun: AtomicU64::new(0),
             swaps_pumpswap: AtomicU64::new(0),
             invalid_events: AtomicU64::new(0),
@@ -212,6 +215,12 @@ impl Metrics {
 
     pub fn incr_stale(&self) {
         self.stale_events.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count a market-state invalidation caused by a non-trade reserve
+    /// mutation (e.g. a pump.fun fee sweep).
+    pub fn incr_reserve_invalidation(&self) {
+        self.reserve_invalidations.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record the normalize+decode time for one update.
@@ -283,6 +292,7 @@ impl Metrics {
             decode_rejected: self.decode_rejected.load(Ordering::Relaxed),
             volume_updates: self.volume_updates.load(Ordering::Relaxed),
             stale_events: self.stale_events.load(Ordering::Relaxed),
+            reserve_invalidations: self.reserve_invalidations.load(Ordering::Relaxed),
             swaps_pumpfun: self.swaps_pumpfun.load(Ordering::Relaxed),
             swaps_pumpswap: self.swaps_pumpswap.load(Ordering::Relaxed),
             invalid_events: self.invalid_events.load(Ordering::Relaxed),
@@ -341,6 +351,7 @@ pub async fn report_loop(metrics: Arc<Metrics>, interval: Duration, shutdown: Sh
                     swaps_pumpfun = now.swaps_pumpfun,
                     swaps_pumpswap = now.swaps_pumpswap,
                     stale_events = now.stale_events,
+                    reserve_invalidations = now.reserve_invalidations,
                     events_per_second = (delta_events as f64 / secs).round() as u64,
                     state_updates = now.state_updates,
                     state_updates_per_second = (delta_updates as f64 / secs).round() as u64,

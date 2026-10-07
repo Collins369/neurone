@@ -59,6 +59,9 @@ pub enum QuoteError {
     UnsupportedInstruction,
     /// Trade pre-state could not be corroborated (refuse to quote).
     UnsupportedState,
+    /// The market state was invalidated by a non-trade reserve mutation
+    /// (e.g. a pump.fun fee sweep) and must be re-established.
+    StateInvalidated,
 }
 
 /// A quote result. All amounts are raw integer units (base token units /
@@ -93,6 +96,7 @@ pub fn quote(
     match market.reserve_state(current_slot, stale_slots) {
         ReserveState::Unknown => return Err(QuoteError::ReservesUnknown),
         ReserveState::Stale => return Err(QuoteError::ReservesStale),
+        ReserveState::Invalidated => return Err(QuoteError::StateInvalidated),
         ReserveState::Known => {}
     }
     if fee_bps > 10_000 {

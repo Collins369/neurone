@@ -182,6 +182,10 @@ pub struct TransactionUpdate {
     pub creates: Vec<CreatedMarket>,
     /// Known event payloads that failed to decode (malformed/truncated).
     pub decode_rejected: u32,
+    /// A non-trade reserve mutation instruction was present in the transaction
+    /// (pump.fun `SweepProtocolFee` / `SweepCreatorFee`). The shard invalidates
+    /// the affected markets rather than continuing from stale state.
+    pub has_reserve_mutation: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -297,6 +301,8 @@ fn normalize_transaction(
     keys.sort_unstable();
     keys.dedup();
 
+    let has_reserve_mutation = detect_reserve_mutation(info);
+
     Some(TransactionUpdate {
         signature,
         slot: t.slot,
@@ -307,7 +313,32 @@ fn normalize_transaction(
         swaps,
         creates,
         decode_rejected,
+        has_reserve_mutation,
     })
+}
+
+/// pump.fun fee-sweep detection.
+///
+/// M3.2E confirmed from on-chain evidence that `SweepProtocolFee` /
+/// `SweepCreatorFee` adjust `virtual_quote_reserves` without a `TradeEvent`.
+/// The instruction discriminators are absent from the published public IDLs, so
+/// detection uses the deployed program's own Anchor logs
+/// (`Program log: Instruction: SweepProtocolFee`), the evidence M3.2E recorded,
+/// plus the pump-fees event it emits (`742b4dbd117a482b`).
+fn detect_reserve_mutation(
+    info: &yellowstone_grpc_proto::prelude::SubscribeUpdateTransactionInfo,
+) -> bool {
+    let Some(meta) = info.meta.as_ref() else {
+        return false;
+    };
+    for line in &meta.log_messages {
+        if line.contains("Instruction: SweepProtocolFee")
+            || line.contains("Instruction: SweepCreatorFee")
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Decode protocol events from a transaction's program logs.
