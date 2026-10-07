@@ -1,230 +1,283 @@
-# Neurone — M3.2B: Pump.fun Unsupported-State Investigation
+# NEURONE — M3.2C Remaining Unsupported-State Investigation
 
 ## Objective
 
-Investigate the **1,654 Pump.fun `UnsupportedState` samples** produced by M3.2A and determine precisely why they failed pre-state corroboration.
+Continue the M3.2 exclusion investigation **surgically**.
 
-This is a focused investigation and fix task.
+M3.2B reduced Pump.fun exclusions from **1,654 → 659** and proved that the dominant earlier failures were validation-gate correlation bugs. The remaining 659 samples are still safely excluded, but they have not yet been fully explained.
 
-Required sequence:
+The goal is to determine **why each remaining exclusion class occurs**, and fix only causes that are demonstrably caused by Neurone's implementation.
 
-```text
-Excluded event
-    ↓
-Investigate why it was excluded
-    ↓
-Identify the concrete failure mechanism
-    ↓
-Implement the smallest justified fix
-    ↓
-Rerun the same parity test
-    ↓
-Measure the reduction in exclusions
-```
+Do **not** redesign the architecture or move to M4 until this investigation is complete.
 
-Do not broaden the scope. Do not redesign the architecture or start M4.
+---
 
-## Source of Truth
+## Current State
 
-Use:
+M3.2B final live run:
 
-`MILESTONE_3_2A_FEE_ARITHMETIC_AND_STATE_GATE_REPORT.md`
+- Pump.fun SELL: 1,400 exact, 329 unsupported
+- Pump.fun token-target BUY: 876 exact, 330 unsupported
+- Total remaining unsupported: **659**
+- `no_previous_event_observed`: **202**
+- `previous_event_not_contiguous`: **457**
+- Supported paths remained 100% exact.
+- Mismatches: **0**
+- Regressions: **0**
+- Tests: **93 passing**
+- No quote/fee/decoder changes were required.
+- M3.2B verdict: **PARTIALLY RESOLVED**
 
-M3.2A established:
+M3.2B explicitly states that the remaining 659 require further investigation rather than being assumed to be protocol limitations.
 
-- 17,991 / 17,991 supported samples exact.
-- 1,654 samples classified as `UnsupportedState`.
-- 893 Pump.fun SELL exclusions.
-- 761 Pump.fun token-target BUY exclusions.
-- Zero formula/fee mismatches.
-- Zero decode/errors.
+---
 
-The exclusions are the subject of this task.
+# Investigation Scope
 
-## 1. Investigate the Exclusions First
+Investigate ONLY these two remaining classes:
 
-Select representative `UnsupportedState` events from both:
+1. `no_previous_event_observed` — 202
+2. `previous_event_not_contiguous` — 457
 
-- Pump.fun SELL
-- Pump.fun token-target `buy`
+The central question is:
 
-Do not immediately modify production logic.
+> Are these remaining exclusions caused by missing/late Yellowstone data, an incomplete validation correlation model, same-transaction mutation, an actually missed intermediate TradeEvent, or some other concrete Neurone implementation issue?
 
-For each representative case, determine exactly why the corroboration gate rejected it.
+Do not assume the answer beforehand.
 
-Inspect the existing evidence available to the system:
+---
 
-- transaction signature
+# Required Investigation
+
+## 1. Reproduce and capture representative exclusions
+
+Run the existing M3.2B parity harness and collect representative examples from BOTH classes.
+
+For each sample capture, where available:
+
+- mint
 - slot
-- instruction ordering
-- ix_name
-- TradeEvent
-- previous observed event on the same curve
+- transaction signature
+- instruction name
+- TradeEvent data
 - derived pre-state
+- derived post-state
+- previous observed event
+- previous event slot
+- previous event pre-state
 - previous event post-state
-- bonding-curve account-cache state
-- account-cache slot
-- virtual token reserves
-- virtual quote reserves
-- real token reserves
-- real quote reserves
+- bonding-curve account cache state
+- account-update slot
+- virtual token reserve
+- virtual quote reserve
+- real token reserve
+- real quote reserve
 - quote mint
 - layout/version
-- relevant Yellowstone account/transaction updates
+- all relevant Yellowstone transaction/account updates around the sample
 
-## 2. Classify the Actual Failure
+Do not inspect only aggregate counters.
 
-Determine which concrete mechanism caused each exclusion.
+---
 
-Possible causes include, but are not limited to:
+## 2. Investigate `no_previous_event_observed`
 
-- no previous event was available;
-- previous event existed but was not considered contiguous;
-- account state existed but arrived too late;
-- account state existed but slot correlation rejected it;
-- state-cache correlation bug;
-- event ordering/correlation issue;
-- same-transaction state mutation;
-- reserve mutation outside the TradeEvent;
-- another specific, reproducible state-reconstruction issue.
+For representative samples determine which of these actually happened:
 
-Do not assume one of these causes is correct before inspecting evidence.
+### A. First trade genuinely visible in the run window
+There is no earlier TradeEvent available because the test window started after the curve already existed.
 
-The purpose is to discover the actual cause.
+### B. Earlier TradeEvent existed but Neurone failed to observe it
+Look for evidence in Yellowstone data, transaction ordering, filtering, subscription behavior, or event decoding.
 
-## 3. Do Not Change the Formula
+### C. Earlier account state existed but arrived too late
+Determine whether the account stream could have provided the required pre-state but did not arrive before the transaction/event correlation.
 
-M3.2A already established:
+### D. A matching older account state was available but validation failed to use it
+If so, identify the exact implementation bug.
 
-```text
-formula/fee mismatch = 0
-decode/error = 0
-```
+### E. Same-transaction or adjacent instruction mutation
+Determine whether the curve changed in the same transaction without a usable predecessor TradeEvent.
 
-Do not alter the validated quote formulas unless the investigation produces direct evidence of a separate formula defect.
+Do not label something a protocol limitation unless the evidence actually supports that conclusion.
 
-Do not re-open the completed fee-arithmetic work.
+---
 
-## 4. Fix Only the Proven Cause
+## 3. Investigate `previous_event_not_contiguous`
 
-Once the exclusion mechanism is established:
+This is the larger and more important class.
 
-- implement the smallest change necessary to fix that mechanism;
-- preserve the existing corroboration safety principle;
-- do not weaken `UnsupportedState` into an assumption;
-- do not classify an event as supported merely to increase coverage;
-- do not introduce speculative fallback logic.
+For representative samples determine exactly why the previous observed event is not the immediate predecessor.
 
-A previously unsupported event may become supported only when its pre-state can be deterministically established.
+Check:
 
-## 5. Preserve Existing Exact Paths
+- Was a TradeEvent genuinely missed?
+- Was there another transaction between the two observed events?
+- Was the intermediate transaction filtered out?
+- Was it decoded under another instruction/program path?
+- Did the curve mutate without a TradeEvent?
+- Did account updates reveal an intermediate state?
+- Did multiple trades occur in the same slot?
+- Did instruction ordering affect the observed sequence?
+- Did Yellowstone delivery/order create an apparent gap?
+- Was the gap caused by a validation implementation assumption?
 
-The fix must not regress:
+For every representative sample, attempt to classify the gap into a concrete cause.
 
-- PumpSwap SELL
-- PumpSwap `buy_exact_quote_in`
-- PumpSwap token-target `buy`
-- Pump.fun `buy_exact_sol_in`
-- Pump.fun `buy_exact_quote_in`
-- already-supported Pump.fun SELL
-- already-supported Pump.fun token-target BUY
-- Yellowstone ingestion
-- parallel sharded state processing
-- existing state-cache behavior
-- official fee primitives
+---
 
-## 6. Rerun the Same Parity Harness
+# Important Safety Rule
 
-After the targeted fix, rerun the same live Yellowstone parity test used by M3.2A.
+Do NOT weaken the corroboration gate merely to increase the exact count.
 
-Report:
+The existing M3.2B rule is intentionally fail-closed:
 
-| Protocol / Instruction | Samples | Exact | Mismatch | Errors | Unsupported | Parity |
-|---|---:|---:|---:|---:|---:|---:|
+> UnsupportedState remains the result whenever the required pre-state cannot be independently corroborated.
 
-Also report:
+Only change the validator if evidence proves the current validator is rejecting a state that can be safely and deterministically established from existing Yellowstone data.
 
-```text
-UnsupportedState before
-UnsupportedState after
-UnsupportedState reduction
-newly-supported samples
-remaining mismatches
-```
+No speculative fallback.
 
-The goal is to determine whether the identified fix actually resolves the investigated exclusions.
+---
 
-## 7. Validate the Fix
+# Fix Rules
 
-For every newly-supported category/sample:
+If a concrete Neurone bug is found:
 
-- verify exact quote parity;
-- verify the pre-state is genuinely corroborated;
-- verify no unsupported state was silently promoted;
-- verify the result remains deterministic.
+1. Fix the smallest possible component.
+2. Prefer `src/validate.rs` or the directly responsible correlation/ingestion code.
+3. Do not alter validated quote formulas unless investigation proves a formula defect.
+4. Do not change fee math.
+5. Do not change protocol decoding unless evidence proves decoding is responsible.
+6. Do not add RPC polling to the hot path.
+7. Do not introduce a database.
+8. Do not redesign the parallel architecture.
+9. Do not add M4 strategy behavior.
+10. Preserve fail-closed behavior.
 
-If the fix resolves only one class of exclusions, report that clearly.
+If no safe fix is proven, leave the sample UnsupportedState and document why.
 
-Do not claim all exclusions are solved unless the evidence demonstrates it.
+---
 
-## 8. If Multiple Causes Are Found
+# Required Validation
 
-Keep the scope narrow.
+After any fix:
 
-For each discovered cause:
+### Run the same M3.2B parity harness
 
-```text
-Cause
-→ Evidence
-→ Minimal fix
-→ Validation result
-```
+Compare:
 
-Do not start unrelated investigations.
+- total samples
+- exact
+- unsupported
+- mismatches
+- errors
+- `no_previous_event_observed`
+- `previous_event_not_contiguous`
+- any newly introduced rejection reason
+- account corroboration count
 
-If a remaining exclusion has a different cause that cannot be safely fixed within this task, leave it as `UnsupportedState` and document the concrete reason.
+### Regression requirement
 
-## Hard Constraints
+All previously exact paths must remain exact.
 
-- Investigate before modifying production behavior.
-- Fix only evidence-backed causes.
-- No broad refactor.
-- No architecture redesign.
-- No M4 Strategy implementation.
-- No Beam.
-- No execution engine.
-- No TP/SL.
-- No capital-arbitration work.
-- No LLM/narrative logic.
-- No RPC polling added to the hot path.
-- No speculative protocol formulas.
-- No weakening of safety guarantees.
-- Integer quote math remains deterministic.
-- Keep the change minimal and auditable.
+Required:
 
-## Final Deliverable
+- PumpSwap SELL: no regression
+- PumpSwap exact quote BUY: no regression
+- PumpSwap token-target BUY: no regression
+- Pump.fun exact-in BUY: no regression
+- Pump.fun SELL supported samples: no regression
+- Pump.fun token-target supported samples: no regression
 
-Produce a concise investigation report containing:
+Any new mismatch is a regression and must be investigated before declaring success.
 
-1. Number of exclusions examined.
-2. Pump.fun SELL exclusions examined.
-3. Token-target BUY exclusions examined.
-4. Exact reason(s) they failed.
-5. Evidence supporting each reason.
-6. Minimal fix implemented.
-7. Before/after parity results.
-8. Number of exclusions removed.
-9. Remaining exclusions and their known reason.
-10. Any regressions.
-11. Final verdict:
+---
 
-```text
-RESOLVED
-PARTIALLY RESOLVED
-or
-BLOCKED
-```
+# Deliverable
 
-Do not proceed to M4 as part of this task.
+Create:
 
-The task ends after the exclusion investigation, targeted fix, and parity rerun.
+`MILESTONE_3_2C_REMAINING_UNSUPPORTED_INVESTIGATION.md`
+
+Include:
+
+## 1. Executive Summary
+
+What happened to the remaining 659 exclusions.
+
+## 2. Before/After
+
+Exact counts before and after any fix.
+
+## 3. `no_previous_event_observed` Analysis
+
+Break down the 202 samples by actual cause.
+
+## 4. `previous_event_not_contiguous` Analysis
+
+Break down the 457 samples by actual cause.
+
+## 5. Representative Evidence
+
+Show concrete examples and the relevant state/slot/event relationships.
+
+## 6. Root Cause
+
+Clearly distinguish:
+
+- Neurone implementation bug
+- Yellowstone delivery/timing behavior
+- genuinely missing predecessor data
+- same-transaction mutation
+- protocol behavior
+- unresolved/insufficient evidence
+
+Do not use “protocol limitation” as a catch-all.
+
+## 7. Fixes Applied
+
+List only evidence-backed changes.
+
+## 8. Validation Results
+
+Provide the complete before/after parity table.
+
+## 9. Remaining Exclusions
+
+For anything still unsupported, explain precisely why it remains unsupported.
+
+## 10. Verdict
+
+Choose exactly one:
+
+- **RESOLVED**
+- **PARTIALLY RESOLVED**
+- **BLOCKED**
+
+---
+
+# Hard Scope Boundary
+
+This task is ONLY the investigation and safe resolution of the remaining M3.2 unsupported-state exclusions.
+
+Do NOT:
+
+- start M4 Strategy
+- implement Beam
+- implement execution
+- implement capital arbitration
+- implement TP/SL
+- redesign state sharding
+- introduce new architecture
+- add narrative/LLM logic
+- add polling
+- optimize unrelated code
+- refactor unrelated modules
+- change the blueprint
+
+If the evidence shows the remaining exclusions are genuinely unresolvable with the current Yellowstone evidence, stop and document that result.
+
+The objective is not to force 100% support.
+
+The objective is to know **exactly why the remaining exclusions happen and whether Neurone can safely resolve them.**
