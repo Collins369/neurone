@@ -1,397 +1,427 @@
-# NEURONE — M3.2D: Transaction-Local Investigation of Remaining Exclusions
+# NEURONE — M3.2E: Final Virtual-Quote Mutation Investigation
 
 ## Objective
 
-Investigate the remaining Pump.fun exclusions from M3.2C by going one level deeper into the actual Yellowstone transaction data.
+Perform the **final, narrowly scoped investigation** into the remaining M3.2 Pump.fun exclusions.
 
-The question is no longer simply:
+M3.2D established a strong and consistent forensic pattern:
 
-> Why can't Neurone correlate this state?
+- `previous_event_not_contiguous` exclusions have:
+  - `Δvirtual_base = 0`
+  - `Δvirtual_quote ≠ 0`
+- This is a quote-reserve-only mutation.
+- It cannot be an ordinary buy or sell because those move both base and quote.
+- It is consistent with a `virtual_quote_reserves` adjustment that does not emit the TradeEvent used by Neurone.
+- It is not currently evidence of malicious tokens.
+- `no_previous_event_observed` is a finite test-window first-observation artifact.
+- No Neurone bug has been proven.
+- No production change has been shipped.
+- The current fail-closed M3.2B gate remains unchanged.
 
-The question is:
+The one unresolved question is:
 
-> **What actually happened between the observed predecessor state and the excluded trade, and does that behavior reveal anything meaningful about the token or market?**
+> **What exact transaction/instruction performs the quote-only `virtual_quote_reserves` mutation, and can Neurone safely observe or decode it?**
 
-M3.2C established that the remaining exclusions are not explained by delivery lag and that no safe validator fix was proven. The remaining `previous_event_not_contiguous` cases require transaction-local evidence to determine whether the gap is caused by a missing TradeEvent, a non-TradeEvent reserve mutation, an unobserved program path, or another concrete state transition.
-
-This task is an investigation first. Do not assume the tokens are malicious.
-
----
-
-# Current Baseline
-
-Use M3.2C as the baseline.
-
-Remaining exclusion classes:
-
-### 1. `no_previous_event_observed`
-
-These are generally first observations of a curve within the finite test window.
-
-M3.2C classified this as confirmed first-observation behavior.
-
-Do NOT spend most of the investigation trying to turn this into a malicious-token detector.
-
-Take a small representative sample only to confirm whether there is any unexpected behavior.
-
-### 2. `previous_event_not_contiguous`
-
-This is the primary target.
-
-Current interpretation:
-
-- previous observed event exists
-- previous post-state does not equal current derived pre-state
-- no intermediate account state was observed
-- likely missing predecessor event or non-TradeEvent reserve mutation
-- delivery lag was tested and disproven
-
-The current explanation is still partly inferred/hypothesized and must now be tested using transaction-local evidence.
+This is the final investigation before deciding whether M3.2 can be closed.
 
 ---
 
-# Primary Questions
+# Source of Truth
 
-For representative excluded trades, determine exactly what happened between:
+Use these existing reports and the current repository implementation:
+
+- `MILESTONE_3_2B_UNSUPPORTED_STATE_INVESTIGATION.md`
+- `MILESTONE_3_2C_REMAINING_UNSUPPORTED_INVESTIGATION.md`
+- `MILESTONE_3_2D_TRANSACTION_LOCAL_EXCLUSION_INVESTIGATION.md`
+- Current `src/validate.rs`
+- Current Pump.fun decoders/state model
+- Existing Yellowstone transaction/account subscriptions
+- Existing project protocol research and tests
+
+Do not overwrite historical reports.
+
+Create a new report:
+
+`MILESTONE_3_2E_FINAL_VIRTUAL_QUOTE_MUTATION_INVESTIGATION.md`
+
+---
+
+# Primary Question
+
+Identify the exact on-chain mechanism responsible for:
 
 ```text
-previous observed event
+previous observed post-state
         ↓
-missing / unexplained transition
+virtual_base unchanged
+virtual_quote changed
+        ↓
+next TradeEvent
+```
+
+Specifically determine:
+
+1. Which transaction performs the mutation?
+2. Which instruction performs it?
+3. Which program owns the instruction?
+4. What are the instruction arguments?
+5. What accounts are modified?
+6. Does it emit an event?
+7. If it emits an event, what discriminator/layout does it use?
+8. Does it update the Pump.fun bonding-curve account?
+9. Does Yellowstone account streaming expose the resulting state?
+10. Can the mutation be deterministically reconstructed before the next trade?
+11. Can Neurone safely incorporate it into its state model?
+
+---
+
+# Investigation Method
+
+## 1. Start from a known excluded sample
+
+Use the M3.2D examples, especially the captured `AF3r22z5...` curve and its relevant slots.
+
+For a selected excluded trade:
+
+```text
+previous observed TradeEvent
         ↓
 excluded trade
 ```
 
-Answer these questions:
+Determine the exact state delta.
 
-1. Was there an intermediate transaction on the same curve?
-2. Was there an intermediate trade?
-3. Was it a Pump.fun trade that Neurone failed to attribute/decode?
-4. Was it another program instruction that changed the curve?
-5. Was it buyback/cashback/holder-reward/creator-related activity?
-6. Was there a reserve mutation without a TradeEvent?
-7. Was the transaction filtered out by the Yellowstone subscription?
-8. Was the relevant instruction present but not decoded?
-9. Was the relevant state changed by an unusual or unsupported instruction path?
-10. Does the missing transition have any observable relationship to token safety or malicious behavior?
+Then work **backwards and forwards through transaction history** to locate the transaction that caused:
 
----
+```text
+Δvirtual_base = 0
+Δvirtual_quote != 0
+```
 
-# Sample Selection
+Do not infer the instruction solely from documentation.
 
-Do NOT inspect only one example.
-
-Select representative samples from:
-
-- Pump.fun SELL exclusions
-- Pump.fun token-target BUY exclusions
-
-Prefer several different mints/curves.
-
-For each class, capture enough examples to determine whether the cause is consistent or heterogeneous.
-
-Do not cherry-pick only easy cases.
+Find the actual transaction.
 
 ---
 
-# Required Transaction-Local Evidence
+# 2. Capture the Mutating Transaction
 
-For each selected exclusion, retrieve/inspect the relevant transaction-local evidence available from Yellowstone and the existing project tooling.
+For every successfully identified mutation, record:
 
-Capture where available:
-
-- mint
 - slot
 - transaction signature
-- instruction ordering
-- outer instructions
-- inner instructions
-- invoked programs
-- account keys
-- relevant bonding curve accounts
-- relevant reserve accounts
-- token accounts
-- TradeEvent logs
-- other program events/logs
+- mint
+- bonding curve address
+- invoked program(s)
+- outer instruction index
+- inner instruction index, if applicable
+- instruction discriminator
+- instruction name, if identifiable
 - instruction arguments
-- pre/post account state where available
-- previous observed TradeEvent
-- excluded TradeEvent
-- state delta between previous observed post-state and current derived pre-state
+- account metas
+- pre/post bonding curve account state
+- pre/post virtual quote reserve
+- pre/post virtual token reserve
+- real reserves
+- emitted logs
+- emitted events
+- transaction ordering relative to the surrounding trades
 
-Do not rely solely on aggregate counters.
+The report must contain at least several concrete examples from different curves if available.
+
+Do not rely on a single transaction.
 
 ---
 
-# Trace the Missing State Transition
+# 3. Identify the Exact Instruction
 
-For each representative case, explicitly construct:
+Potential candidates may include:
+
+- `set_virtual_quote_reserves`
+- creator/holder-reward accounting
+- buyback accounting
+- another Pump.fun instruction
+- another program entirely
+
+Treat these only as candidates.
+
+The task is to prove the actual instruction from transaction evidence.
+
+If the instruction cannot be identified, mark it:
+
+`UNRESOLVED`
+
+Do not force a match.
+
+---
+
+# 4. Determine Why the Current Yellowstone Event Model Misses It
+
+Once the mutation is identified, trace it through Neurone's current pipeline:
 
 ```text
-Previous observed post-state
-        ↓
-        ?
-        ↓
-Current derived pre-state
+Solana
+ ↓
+Yellowstone
+ ↓
+subscription filter
+ ↓
+normalization
+ ↓
+decoder
+ ↓
+state update
+ ↓
+validator
 ```
 
-Calculate the reserve delta:
+Determine exactly where the mutation disappears.
 
-```text
-delta_virtual_base
-delta_virtual_quote
-delta_real_base
-delta_real_quote
-```
+Possible outcomes:
 
-Then determine whether that delta corresponds to:
+### A. Yellowstone does not provide it
 
-- another trade
-- liquidity movement
-- buyback
-- cashback
-- holder reward
-- creator-related action
-- virtual reserve update
-- migration
-- pool/curve transition
-- account initialization/update
-- another known Pump.fun instruction
-- unknown instruction
+Document the exact limitation.
 
-If it corresponds to another trade, identify the transaction and instruction.
+### B. Yellowstone provides it but current subscription filters exclude it
 
-If it corresponds to a non-trade mutation, identify the instruction responsible.
+Identify the filter.
 
-If it cannot be determined, explicitly mark it `UNRESOLVED` rather than guessing.
+### C. Yellowstone provides it and the transaction is present, but Neurone ignores the program/instruction
 
----
+Identify the code path.
 
-# Program Attribution Investigation
+### D. Neurone receives the instruction but does not decode it
 
-M3.2C identified program-attribution gaps as one candidate explanation.
+Identify the missing decoder.
 
-Test this directly.
+### E. Neurone decodes it but does not apply the state update
 
-Determine:
+Identify the missing state transition.
 
-- whether the missing transaction invoked Pump.fun
-- whether the relevant instruction was inside an inner instruction
-- whether account filtering excluded it
-- whether the event decoder ignored it
-- whether it used a different program path/discriminator
-- whether the transaction was present in Yellowstone but absent from Neurone's normalized event stream
+### F. Account stream provides the post-state but too late for the current single-pass validator
 
-If an attribution/decoder/filter bug is found, prove it with a concrete transaction before changing code.
+Measure this rather than assuming it.
+
+### G. Something else
+
+Document precisely.
 
 ---
 
-# Non-Trade Mutation Investigation
+# 5. Determine Whether It Can Be Safely Integrated
 
-Explicitly investigate whether the missing state transition can be produced without a TradeEvent.
+This is critical.
 
-Pay particular attention to any Pump.fun behavior already identified by the project research as capable of affecting curve/reserve state.
+Do NOT automatically implement a fix just because the instruction has been found.
 
-Do not assume these behaviors are malicious.
+Determine whether the mutation can be represented deterministically.
 
-The question is:
+Ask:
 
-> Does the instruction explain the exact state delta?
+- Is the resulting virtual quote reserve directly encoded?
+- Is the delta directly encoded?
+- Can it be reconstructed from instruction arguments?
+- Is there a reliable event?
+- Is there a reliable account update?
+- Does it occur before the next trade?
+- Can Yellowstone ordering guarantee that Neurone sees it before the next trade?
+- Can same-slot ordering be handled deterministically?
+- Is there any ambiguity between multiple mutations?
+- Can a stale/missing mutation cause a false accepted trade?
 
-A theoretical possibility is not sufficient.
+The standard is:
 
----
-
-# Maliciousness / Safety Analysis
-
-This section is REQUIRED.
-
-For every confirmed exclusion cause, classify whether it is:
-
-### A. Normal market behavior
-
-Ordinary trading or documented protocol state transition.
-
-### B. Unusual but legitimate protocol behavior
-
-Unexpected from the normal trade path, but attributable to a legitimate Pump.fun instruction/mechanism.
-
-### C. Unsupported / unknown behavior
-
-The state changed but available evidence cannot identify the responsible instruction.
-
-### D. Potentially suspicious behavior
-
-There is concrete evidence of behavior that could indicate manipulation, malicious control, or an unsafe execution condition.
-
-### E. Confirmed malicious behavior
-
-Only use this classification if the evidence directly supports it.
-
-**Do not label a token malicious merely because Neurone could not reconstruct its state.**
-
-The investigation must distinguish:
-
-```text
-state-observability failure
-        ≠
-token safety failure
-        ≠
-malicious token
-```
+> **If Neurone cannot guarantee the correct pre-state, it must remain UnsupportedState.**
 
 ---
 
-# Compare Excluded vs Supported Tokens
+# 6. Safety / Maliciousness Re-check
 
-If practical, compare representative excluded cases against supported Pump.fun trades.
+This is NOT a token-scoring task.
 
-Look for concrete differences in:
+Confirm whether the exact identified mutation is:
 
-- instruction path
-- transaction structure
-- programs invoked
-- reserve mutations
-- TradeEvent presence
-- account updates
-- market lifecycle
-- token/curve state
-- quote mint
-- same-slot behavior
+- normal documented protocol behavior
+- unusual but legitimate protocol behavior
+- an administrative/control-plane action
+- an unsupported behavior
+- potentially suspicious
+- malicious
 
-The goal is to determine whether excluded events form a meaningful behavioral class or are simply events that happen to lack sufficient predecessor evidence.
+Only classify as malicious if the transaction evidence actually supports that conclusion.
 
-Do NOT invent a new safety heuristic from weak correlations.
+The existing M3.2D conclusion was:
 
----
+> state-observability limitation, not token-safety finding.
 
-# Fix Policy
+Do not reverse that conclusion without direct evidence.
 
-This is investigation-first.
+Also determine whether **the ability to manipulate `virtual_quote_reserves` itself has any safety implications for trading**, even if the mechanism is legitimate.
 
-### If a real Neurone bug is proven:
+For example:
 
-Apply the smallest safe fix.
-
-Examples:
-
-- missing instruction attribution
-- incorrect transaction filtering
-- missed event decoding
-- incorrect event normalization
-- incorrect state correlation
-
-### If protocol behavior is responsible:
-
-Do not automatically modify the validator.
-
-Determine whether that protocol behavior can be deterministically represented in the state model.
-
-### If evidence is insufficient:
-
-Keep `UnsupportedState`.
-
-Do NOT:
-
-- weaken exact state equality
-- assume missing state
-- create speculative fallback formulas
-- use current account state as a substitute for historical pre-state
-- add polling
-- add an RPC dependency to the hot path
-- accept unknown state as safe
-
-Fail closed.
-
----
-
-# Validation After Any Fix
-
-Run the existing M3.2 parity harness.
-
-Compare against M3.2C:
-
-- exact
-- unsupported
-- mismatches
-- errors
-- `no_previous_event_observed`
-- `previous_event_not_contiguous`
-- Pump.fun SELL parity
-- Pump.fun token-target parity
-- all previously exact paths
-
-Required:
-
-- zero new formula mismatches
-- zero regressions
-- all existing 100% exact supported paths remain exact
-
-If a fix increases supported trades but introduces mismatches, revert it and investigate.
-
----
-
-# Deliverable
-
-Create:
-
-`MILESTONE_3_2D_TRANSACTION_LOCAL_EXCLUSION_INVESTIGATION.md`
-
-Include:
-
-## 1. Executive Summary
-
-What actually causes the remaining exclusions.
-
-## 2. Sample Set
-
-List the representative transactions/mints investigated and why they were selected.
-
-## 3. Transaction-Local Findings
-
-For each sample, show the state transition and responsible instruction/transaction where identifiable.
-
-## 4. Root-Cause Classification
+- Can it materially change quoted execution?
+- Could it make a stale pre-state dangerous?
+- Should Neurone invalidate an armed trade after such a mutation?
+- Is the mutation expected by the protocol's economics?
 
 Separate:
 
-- missing TradeEvent
-- unobserved transaction
-- program attribution/filter issue
-- decoder issue
-- non-TradeEvent reserve mutation
-- legitimate protocol behavior
-- unresolved
+```text
+legitimate protocol mechanism
+```
 
-## 5. Excluded vs Supported Comparison
+from:
 
-Explain whether excluded events form a meaningful behavioral class.
+```text
+safe to trade through without observing it
+```
 
-## 6. Maliciousness / Safety Findings
+These are NOT necessarily the same thing.
 
-Explicitly state whether the evidence shows:
+---
 
-- normal behavior
-- unusual legitimate behavior
-- unknown behavior
-- potentially suspicious behavior
-- confirmed malicious behavior
+# 7. Decide Whether a Production Fix Is Justified
 
-Do not overstate.
+### If a deterministic, reliable fix is proven:
 
-## 7. Fixes Applied
+Implement the **smallest possible change**.
 
-Only evidence-backed production changes.
+Prefer:
 
-## 8. Validation
+- targeted instruction decoding
+- targeted state update
+- targeted Yellowstone filter extension
 
-Before/after metrics and regression results.
+Do not redesign the architecture.
 
-## 9. Remaining Unknowns
+### If the mutation can only be observed unreliably:
 
-State exactly what cannot be determined from the available Yellowstone evidence.
+Do NOT ship a fix.
 
-## 10. Verdict
+Keep the fail-closed exclusion.
+
+### If the account stream is sufficient but timing is not guaranteed:
+
+Do NOT assume it is safe merely because the final account state eventually arrives.
+
+### If evidence is incomplete:
+
+Do NOT guess.
+
+Leave `UnsupportedState`.
+
+---
+
+# 8. Validation
+
+If a production fix is implemented:
+
+Run the full existing M3.2 parity harness.
+
+Compare:
+
+- total samples
+- supported
+- unsupported
+- exact
+- mismatches
+- errors
+- Pump.fun SELL
+- Pump.fun token-target BUY
+- PumpSwap SELL
+- PumpSwap exact quote BUY
+- PumpSwap `buy`
+- Pump.fun exact-in BUY
+
+Required:
+
+- no new mismatches
+- no regressions
+- all previously exact paths remain exact
+
+Specifically measure whether the quote-only exclusions decrease.
+
+Report:
+
+```text
+M3.2B baseline
+M3.2D baseline
+M3.2E result
+```
+
+If no production fix is justified, do not modify production behavior.
+
+---
+
+# Final Deliverable
+
+Create:
+
+`MILESTONE_3_2E_FINAL_VIRTUAL_QUOTE_MUTATION_INVESTIGATION.md`
+
+Use this structure:
+
+## 1. Executive Summary
+
+State exactly what the mutation is and whether its instruction was identified.
+
+## 2. Concrete Transaction Evidence
+
+Provide several real transaction examples.
+
+## 3. Exact Instruction
+
+Program, instruction, discriminator, arguments, accounts and event/log behavior.
+
+## 4. State Transition
+
+Show:
+
+```text
+before
+→ mutation
+→ after
+```
+
+with virtual base/quote and relevant real reserves.
+
+## 5. Why Neurone Misses It
+
+Identify the exact point in the current pipeline where the information is lost.
+
+## 6. Safety Analysis
+
+Separate:
+
+- protocol legitimacy
+- execution safety
+- token maliciousness
+
+## 7. Production Fix Decision
+
+Choose:
+
+- **SAFE TO IMPLEMENT**
+- **NOT SAFE TO IMPLEMENT**
+- **INSUFFICIENT EVIDENCE**
+
+Explain why.
+
+## 8. Implementation
+
+If and only if safe, document the minimal production change.
+
+## 9. Validation
+
+Full before/after parity and exclusion counts.
+
+## 10. Remaining Unknowns
+
+Anything that still cannot be proven.
+
+## 11. Final Verdict
 
 Choose:
 
@@ -403,6 +433,8 @@ Choose:
 
 # Hard Scope Boundary
 
+This is the **final M3.2 exclusion investigation**.
+
 Do NOT:
 
 - start M4 Strategy
@@ -410,19 +442,22 @@ Do NOT:
 - implement execution
 - implement capital arbitration
 - implement TP/SL
-- redesign Yellowstone architecture
-- redesign state sharding
+- redesign Yellowstone
+- redesign sharding
 - add narrative/LLM logic
 - add speculative safety scoring
 - add RPC polling to the hot path
-- refactor unrelated modules
-- manufacture a malicious-token filter
-- force the exclusions to zero
+- rewrite unrelated code
+- force exclusions to zero
+- assume every quote mutation is malicious
+- accept an unverified state as safe
 
-The objective is **forensic understanding of the missing state transitions**.
+The goal is not:
 
-If the evidence shows that the exclusions are ordinary/legitimate protocol behavior or simply insufficient historical observation, document that clearly.
+> "Make the unsupported count disappear."
 
-If the evidence reveals a real Neurone bug, fix it minimally.
+The goal is:
 
-If the evidence reveals genuinely suspicious behavior, document the exact evidence and do not generalize beyond what the data supports.
+> **Identify exactly what causes the quote-only state transition, determine whether Neurone can observe it deterministically, and only then decide whether it is safe to integrate.**
+
+If the evidence proves that the current fail-closed boundary is the correct design, say so clearly and close M3.2 without forcing a code change.
