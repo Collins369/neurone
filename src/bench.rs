@@ -46,7 +46,8 @@ pub async fn run(config: &Config, events: u64, rate_per_sec: Option<u64>) -> Res
     let mut source = SimulatedSource::new(config.ingest.simulated.markets, 0x0042_454E_4348);
 
     let mut ticker = rate_per_sec.map(|rate| {
-        let mut t = tokio::time::interval(Duration::from_nanos(1_000_000_000 / rate.max(1)));
+        let period_ns = (1_000_000_000u64 / rate.max(1)).max(1);
+        let mut t = tokio::time::interval(Duration::from_nanos(period_ns));
         t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
         t
     });

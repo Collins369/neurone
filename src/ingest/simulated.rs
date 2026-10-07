@@ -127,7 +127,9 @@ pub async fn run(
 
     let mut source = SimulatedSource::new(sim.markets, DEFAULT_SEED);
     let eps = sim.events_per_second.max(1);
-    let mut ticker = tokio::time::interval(Duration::from_nanos(1_000_000_000 / eps));
+    // Clamp to >= 1ns so an absurd rate cannot produce a zero-duration interval.
+    let period_ns = (1_000_000_000u64 / eps).max(1);
+    let mut ticker = tokio::time::interval(Duration::from_nanos(period_ns));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
 
     let mut emitted: u64 = 0;
