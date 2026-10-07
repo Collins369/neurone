@@ -126,8 +126,10 @@ pub struct PathStats {
     pub exact: u64,
     pub mismatches: u64,
     pub errors: u64,
+    pub unsupported_state: u64,
     pub example_mismatch: Option<String>,
     pub example_error: Option<String>,
+    pub example_unsupported: Option<String>,
 }
 
 /// Live validation outcome.
@@ -153,12 +155,13 @@ impl ValidationReport {
 
     /// Render the parity matrix as text.
     pub fn matrix(&self) -> String {
-        let mut out =
-            String::from("venue/instruction            samples  exact  mismatch  errors\n");
+        let mut out = String::from(
+            "venue/instruction            samples  exact  mismatch  errors  unsupported\n",
+        );
         for (k, s) in &self.paths {
             out.push_str(&format!(
-                "{:<28} {:>7} {:>6} {:>9} {:>7}\n",
-                k, s.samples, s.exact, s.mismatches, s.errors
+                "{:<28} {:>7} {:>6} {:>9} {:>7} {:>10}\n",
+                k, s.samples, s.exact, s.mismatches, s.errors, s.unsupported_state
             ));
         }
         out
@@ -209,6 +212,8 @@ pub async fn run(config: &Config, seconds: u64) -> Result<ValidationReport> {
         ..Default::default()
     };
     let mut cache = CurveCache::default();
+    // Last observed post-trade state per pump.fun curve (for contiguity).
+    let mut last_event: HashMap<MarketKey, (u64, u128, i128)> = HashMap::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(seconds);
 
     loop {
@@ -236,24 +241,40 @@ pub async fn run(config: &Config, seconds: u64) -> Result<ValidationReport> {
         for swap in &tx.swaps {
             report.swaps += 1;
             let key = format!("{}/{}", swap.venue.as_str(), instruction_label(swap));
-            // Corroborate the event-derived pre-state against the bonding-curve
-            // account stream (state strictly older than the trade's slot).
+            // Pre-state corroboration for pump.fun SELL / token-target BUY.
+            let mut corroborated = true;
             if swap.venue == Venue::PumpFun {
-                if let (Some((vb, vq)), Ok(s)) = (
-                    cache
+                if let Ok(s) = quote::swap_pre_state(swap) {
+                    report.curve_corroborations += 1;
+                    // (a) contiguous previous event on the same curve.
+                    let contig = last_event
+                        .get(&swap.market_key)
+                        .map(|(slot, vb, vq)| {
+                            *slot < tx.slot && *vb == s.pre_base && (*vq as u128) == s.pre_quote
+                        })
+                        .unwrap_or(false);
+                    // (b) bonding-curve account state strictly older than the trade.
+                    let acct = cache
                         .curves
                         .get(&swap.market_key)
-                        .and_then(|h| h.pre_state(tx.slot)),
-                    quote::swap_pre_state(swap),
-                ) {
-                    report.curve_corroborations += 1;
-                    if vb == s.pre_base && (vq as u128) == s.pre_quote {
+                        .and_then(|h| h.pre_state(tx.slot))
+                        .map(|(vb, vq)| vb == s.pre_base && (vq as u128) == s.pre_quote)
+                        .unwrap_or(false);
+                    if contig || acct {
                         report.curve_corroborated += 1;
+                    } else if !matches!(quote::classify(swap), Ok(Instruction::BuyExactIn)) {
+                        // SELL / token-target require corroborated pre-state.
+                        corroborated = false;
                     }
+                    last_event.insert(swap.market_key, (tx.slot, s.pre_base, s.pre_quote as i128));
                 }
             }
             let tq = crate::clock::now_ns();
-            let outcome = evaluate(swap);
+            let outcome = if corroborated {
+                evaluate(swap)
+            } else {
+                Err(quote::QuoteError::UnsupportedState)
+            };
             report
                 .quote_ns
                 .push((crate::clock::now_ns() - tq).min(u64::MAX as u128) as u64);
@@ -271,9 +292,16 @@ pub async fn run(config: &Config, seconds: u64) -> Result<ValidationReport> {
                     }
                 }
                 Err(e) => {
-                    path.errors += 1;
-                    if path.example_error.is_none() {
-                        path.example_error = Some(format!("{e:?}: {}", describe(swap)));
+                    if matches!(e, quote::QuoteError::UnsupportedState) {
+                        path.unsupported_state += 1;
+                        if path.example_unsupported.is_none() {
+                            path.example_unsupported = Some(describe(swap));
+                        }
+                    } else {
+                        path.errors += 1;
+                        if path.example_error.is_none() {
+                            path.example_error = Some(format!("{e:?}: {}", describe(swap)));
+                        }
                     }
                 }
             }

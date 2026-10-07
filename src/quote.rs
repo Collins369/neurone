@@ -57,6 +57,8 @@ pub enum QuoteError {
     Overflow,
     /// Instruction name not recognized (refuse to guess).
     UnsupportedInstruction,
+    /// Trade pre-state could not be corroborated (refuse to quote).
+    UnsupportedState,
 }
 
 /// A quote result. All amounts are raw integer units (base token units /
@@ -128,6 +130,55 @@ fn k_out(reserve_in: u128, reserve_out: u128, net_in: u128) -> Option<u128> {
 /// (reserve_in + input))`. Returns `None` on overflow or zero denominator.
 pub fn constant_product(reserve_in: u128, reserve_out: u128, input: u128) -> Option<u128> {
     k_out(reserve_in, reserve_out, input)
+}
+
+// ---------------------------------------------------------------------------
+// Official SDK fee arithmetic (client-side quoting)
+//
+// Source: `@pump-fun/pump-sdk` v3.0.0 (`src/bondingCurve.ts`, `src/fees.ts`).
+// These map a **user-specified gross amount** to the bonding-curve value. They
+// are distinct from interpreting a `TradeEvent`, whose `sol_amount` is already
+// a curve-level (post-fee) value — see the M3.2A report.
+// ---------------------------------------------------------------------------
+
+/// Official fee: `ceil(amount * bps / 10000)`.
+pub fn fee_ceil(amount: u128, bps: u64) -> Option<u128> {
+    amount
+        .checked_mul(u128::from(bps))
+        .map(|v| v.div_ceil(10_000))
+}
+
+/// Official BUY (SOL/quote in): the curve input for a user gross amount.
+///
+/// `total_bps` is the protocol rate plus the creator rate when the creator is
+/// set (never otherwise).
+pub fn buy_input_from_gross(gross: u64, total_bps: u64) -> Option<u128> {
+    let g = u128::from(gross).checked_sub(1)?;
+    Some(g.checked_mul(10_000)? / (u128::from(total_bps) + 10_000))
+}
+
+/// Official token-target BUY: `floor(x·vq/(vt−x)) + 1` (the `+1` is explicit,
+/// not a generic ceiling).
+pub fn token_target_sol_cost(vt: u128, vq: u128, x: u128) -> Option<u128> {
+    let den = vt.checked_sub(x)?;
+    if den == 0 {
+        return None;
+    }
+    vq.checked_mul(x)?.checked_div(den)?.checked_add(1)
+}
+
+/// Official SELL: user net = `gross − fee(gross, protocol) − fee(gross, creator)`
+/// with the creator term omitted when no creator is set.
+pub fn sell_net_from_gross(
+    gross: u128,
+    protocol_bps: u64,
+    creator_bps: Option<u64>,
+) -> Option<u128> {
+    let mut net = gross.checked_sub(fee_ceil(gross, protocol_bps)?)?;
+    if let Some(bps) = creator_bps {
+        net = net.checked_sub(fee_ceil(gross, bps)?)?;
+    }
+    Some(net)
 }
 
 fn quote_pumpswap(

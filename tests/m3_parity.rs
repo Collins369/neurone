@@ -188,3 +188,47 @@ fn instruction_classification_is_strict() {
     s.ix_name = Some("something_else".into());
     assert_eq!(quote::classify(&s), Err(QuoteError::UnsupportedInstruction));
 }
+
+// --- Official SDK fee arithmetic (client-side) -----------------------------
+
+#[test]
+fn official_fee_is_ceil() {
+    // ceil(987653 * 95 / 10000) = 9383 (matches the real TradeEvent).
+    assert_eq!(quote::fee_ceil(987_653, 95), Some(9_383));
+    assert_eq!(quote::fee_ceil(0, 100), Some(0));
+    assert_eq!(quote::fee_ceil(1, 1), Some(1)); // ceil(0.0001)
+}
+
+#[test]
+fn official_buy_input_uses_amount_minus_one_and_inversion() {
+    // input = (amount-1)*10000/(totalBps+10000)
+    assert_eq!(quote::buy_input_from_gross(1_000_000, 125), Some(987_653));
+    assert_eq!(quote::buy_input_from_gross(0, 125), None);
+    // No fee -> identity minus one.
+    assert_eq!(quote::buy_input_from_gross(50_001, 0), Some(50_000));
+}
+
+#[test]
+fn official_token_target_sol_cost_uses_plus_one() {
+    // floor(x*vq/(vt-x)) + 1, not a generic ceiling.
+    let vt = 1_000_000u128;
+    let vq = 5_000u128;
+    let x = 1_000u128;
+    let floor = vq * x / (vt - x);
+    assert_eq!(quote::token_target_sol_cost(vt, vq, x), Some(floor + 1));
+}
+
+#[test]
+fn official_sell_net_subtracts_gated_creator_fee() {
+    let gross = 987_653u128;
+    // Protocol only (no creator set).
+    assert_eq!(
+        quote::sell_net_from_gross(gross, 95, None),
+        Some(gross - 9_383)
+    );
+    // Protocol + creator.
+    assert_eq!(
+        quote::sell_net_from_gross(gross, 95, Some(30)),
+        Some(gross - 9_383 - 2_963)
+    );
+}
