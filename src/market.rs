@@ -23,10 +23,13 @@ use crate::events::{AccountUpdate, MarketKey, TransactionUpdate, VaultBalance};
 /// Default number of sparse per-slot volume buckets retained per market.
 pub const DEFAULT_VOLUME_BUCKETS: usize = 1024;
 
-/// Lifecycle status. M2 only observes; later milestones add qualified/armed.
+/// Lifecycle status. M4 evaluates `Observing -> Qualified`; arming and beyond
+/// are later milestones.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarketStatus {
     Observing,
+    /// M4: the market currently satisfies the deterministic strategy gates.
+    Qualified,
 }
 
 /// Freshness/trust of a market's reserve state (infrastructure concept, not
@@ -248,6 +251,22 @@ pub struct MarketState {
     /// state, if any. Cleared by a fresh account update at `slot >= this`.
     pub invalidated_at_slot: Option<u64>,
 
+    // M4 strategy inputs / bookkeeping (all deterministic; no instrumentation).
+    /// Chain-proven creation slot (0 = unknown). Set only when a chain event
+    /// proves creation (e.g. an observed pump.fun `CreateEvent`); never inferred
+    /// from first observation.
+    pub created_at_slot: u64,
+    /// Running peak of MCAP in raw quote units, for deterministic drawdown
+    /// checks.
+    pub peak_mcap_quote: u128,
+    /// Monotonic version bumped on every evaluation-relevant state change.
+    pub strategy_version: u64,
+    /// Version at which this market last newly qualified (0 = never).
+    pub last_qualified_version: u64,
+    /// Version consumed by an execution layer (0 = none). Reserved for M5; a
+    /// market already consumed at the current version cannot re-qualify.
+    pub consumed_version: u64,
+
     // Instrumentation only (monotonic ns); excluded from equality.
     pub first_seen_ns: u128,
     pub last_update_ns: u128,
@@ -295,6 +314,11 @@ impl MarketState {
             last_reserve_signature: None,
             state_version: 0,
             invalidated_at_slot: None,
+            created_at_slot: 0,
+            peak_mcap_quote: 0,
+            strategy_version: 0,
+            last_qualified_version: 0,
+            consumed_version: 0,
             first_seen_ns: now_ns,
             last_update_ns: now_ns,
         }
@@ -324,7 +348,9 @@ impl MarketState {
         if let Some(decoded) = &ev.decoded {
             self.apply_decoded_account(decoded);
         }
+        self.note_mcap_peak();
         self.state_version = self.state_version.wrapping_add(1);
+        self.strategy_version = self.strategy_version.wrapping_add(1);
         true
     }
 
@@ -337,6 +363,7 @@ impl MarketState {
             None => slot,
         });
         self.state_version = self.state_version.wrapping_add(1);
+        self.strategy_version = self.strategy_version.wrapping_add(1);
         self.last_update_ns = crate::clock::now_ns();
     }
 
@@ -433,6 +460,12 @@ impl MarketState {
         if let Some(ts) = c.timestamp {
             self.last_trade_timestamp = Some(ts);
         }
+        // The creation transaction's slot is chain-proven creation.
+        if self.created_at_slot == 0 {
+            self.created_at_slot = self.last_slot;
+        }
+        self.note_mcap_peak();
+        self.strategy_version = self.strategy_version.wrapping_add(1);
         self.last_update_ns = now_ns;
     }
 
@@ -480,6 +513,8 @@ impl MarketState {
         self.volume
             .record(self.last_slot, s.is_buy, s.quote_amount, s.base_amount);
         self.last_trade_slot = self.last_slot;
+        self.note_mcap_peak();
+        self.strategy_version = self.strategy_version.wrapping_add(1);
         self.last_update_ns = now_ns;
         true
     }
@@ -564,8 +599,79 @@ impl MarketState {
         self.last_reserve_timestamp = None;
         self.last_reserve_signature = Some(signature);
         self.last_slot = self.last_slot.max(slot);
+        self.note_mcap_peak();
+        self.strategy_version = self.strategy_version.wrapping_add(1);
         self.last_update_ns = now_ns;
         true
+    }
+
+    /// Deterministic reference price in raw quote units per raw base unit,
+    /// venue-aware: pump.fun uses the curve's virtual reserves; pump.swap uses
+    /// the vault reserves. `None` when the price is not well defined.
+    pub fn reference_price_raw(&self) -> Option<Ratio> {
+        match self.venue? {
+            Venue::PumpFun => {
+                if self.virtual_base_reserve == 0 || self.virtual_quote_reserve <= 0 {
+                    return None;
+                }
+                Ratio::new(
+                    self.virtual_quote_reserve as u128,
+                    self.virtual_base_reserve,
+                )
+            }
+            Venue::PumpSwap => {
+                if self.base_reserve == 0 || self.quote_reserve == 0 {
+                    return None;
+                }
+                Ratio::new(self.quote_reserve, self.base_reserve)
+            }
+        }
+    }
+
+    /// Deterministic market cap in **raw quote units**:
+    /// `reference_price × token_total_supply` (integer; `None` if undefined).
+    pub fn market_cap_quote(&self) -> Option<u128> {
+        let price = self.reference_price_raw()?;
+        if self.token_total_supply == 0 {
+            return None;
+        }
+        price
+            .num
+            .checked_mul(self.token_total_supply)?
+            .checked_div(price.den)
+    }
+
+    /// Deterministic liquidity in raw quote units: twice the quote-side depth
+    /// (curve virtual quote reserve, or pool vault quote reserve). `None` when
+    /// no authoritative reserves are known.
+    pub fn liquidity_quote(&self) -> Option<u128> {
+        if !self.reserves_known {
+            return None;
+        }
+        let depth = match self.venue? {
+            Venue::PumpFun => {
+                if self.virtual_quote_reserve <= 0 {
+                    return None;
+                }
+                self.virtual_quote_reserve as u128
+            }
+            Venue::PumpSwap => self.quote_reserve,
+        };
+        depth.checked_mul(2)
+    }
+
+    /// Total quote volume recorded in buckets with `slot >= from_slot`.
+    pub fn rolling_quote_volume(&self, from_slot: u64) -> u64 {
+        self.volume.totals_since(from_slot).total_quote()
+    }
+
+    /// Update the running MCAP peak. Deterministic; no allocation.
+    pub(crate) fn note_mcap_peak(&mut self) {
+        if let Some(m) = self.market_cap_quote() {
+            if m > self.peak_mcap_quote {
+                self.peak_mcap_quote = m;
+            }
+        }
     }
 
     /// Reference (spot) price from pool/curve reserves: quote per base, raw.
@@ -656,6 +762,11 @@ impl PartialEq for MarketState {
             && self.last_reserve_signature == other.last_reserve_signature
             && self.state_version == other.state_version
             && self.invalidated_at_slot == other.invalidated_at_slot
+            && self.created_at_slot == other.created_at_slot
+            && self.peak_mcap_quote == other.peak_mcap_quote
+            && self.strategy_version == other.strategy_version
+            && self.last_qualified_version == other.last_qualified_version
+            && self.consumed_version == other.consumed_version
     }
 }
 
@@ -682,6 +793,7 @@ mod tests {
             is_startup: false,
             txn_signature: None,
             decoded: None,
+            pyth_sol_usd: None,
         }
     }
 
@@ -736,5 +848,31 @@ mod tests {
         let size = std::mem::size_of::<MarketState>();
         println!("size_of::<MarketState>() = {size} bytes");
         assert!(size <= 768, "MarketState grew unexpectedly: {size} bytes");
+    }
+
+    /// The MCAP peak is a running maximum: it rises on new highs and is retained
+    /// on retracements. This is what makes the M4 drawdown gate measure a real
+    /// decline from the observed peak (and why updating the peak before the
+    /// drawdown comparison is correct: a new high yields exactly zero drawdown).
+    #[test]
+    fn mcap_peak_is_a_running_maximum() {
+        let mut s = MarketState::new(key(1), 0);
+        s.venue = Some(Venue::PumpFun);
+        s.token_total_supply = 1_000;
+        s.virtual_base_reserve = 1_000;
+        s.virtual_quote_reserve = 500;
+        s.note_mcap_peak();
+        assert_eq!(s.peak_mcap_quote, 500);
+
+        // Rise: peak follows up.
+        s.virtual_quote_reserve = 900;
+        s.note_mcap_peak();
+        assert_eq!(s.peak_mcap_quote, 900);
+
+        // Retracement: peak is retained (drawdown is measured from 900).
+        s.virtual_quote_reserve = 400;
+        s.note_mcap_peak();
+        assert_eq!(s.peak_mcap_quote, 900);
+        assert_eq!(s.market_cap_quote(), Some(400));
     }
 }

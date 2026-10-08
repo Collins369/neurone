@@ -50,6 +50,9 @@ account_programs = ["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"]
 account_memcmp_base58 = "4y6pru6YvC7"
 # Additional explicit account pubkeys to track as markets.
 account_addresses = []
+# Exact account addresses streamed as the SOL/USD reference (Pyth SOL/USD
+# PriceUpdateV2). Decoded into the reference state, never into a market.
+sol_usd_accounts = ["7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE"]
 # Additional bounded account subscriptions (one account type each; never a
 # token-account firehose). The PumpSwap AMM `Pool` accounts are subscribed so a
 # pool discovered after launch is known — identity, mints, vault addresses and
@@ -79,3 +82,45 @@ latency_boundaries_ns = [
 # Reserves are considered stale once the current slot is more than this many
 # slots past the last observed reserve update. Infrastructure setting only.
 reserve_stale_slots = 150
+
+[strategy]
+# M4 Strategy V1 — qualification only (no arming, signing, execution, TP/SL).
+# Thresholds are the locked V1 specification.
+min_liquidity_usd = 2000
+min_market_cap_usd = 2000
+max_market_cap_usd = 10000
+rolling_volume_window_seconds = 300
+min_rolling_volume_usd = 1000
+#
+# OPERATOR INPUT — static SOL/USD price in micros (1e-6 USD). There is no live
+# price oracle in scope (no RPC/HTTP), so USD gates are evaluated against this
+# constant. It is deliberately unset here: the repository must not invent a
+# price. M4 stays INACTIVE (nothing is evaluated or qualified) until you set it.
+#
+# sol_usd_price_micros = 200000000   # e.g. $200.00 per SOL
+#
+# SOL/USD reference source: "static" (the operator price above) or
+# "pyth_yellowstone" (the on-chain Pyth SOL/USD PriceUpdateV2 account streamed
+# over the existing Yellowstone transport — no HTTP, no RPC). In pyth mode M4
+# always evaluates and fails closed while the reference is absent/stale.
+sol_usd_source = "pyth_yellowstone"
+# Maximum age of the local SOL/USD reference before it is stale (ms), measured
+# on the monotonic receive clock. Derived from the Pyth sponsored feed's
+# documented 55 s heartbeat: 120 s tolerates one missed heartbeat.
+sol_usd_max_staleness_ms = 120000
+#
+# Probe notional for executable buy/sell route checks, raw quote units
+# (lamports). Defaults to 0.1 SOL if omitted.
+# probe_notional_lamports = 100000000
+#
+# Maximum token age (locked: 15 minutes). This is a MAXIMUM — a token must be at
+# most 900 s old to qualify; it does not require the token to have existed for
+# 15 minutes. Boundary is slot-exact (<= 2250 slots passes). If creation cannot
+# be proven, the market fails closed while this gate is enabled.
+max_token_age_seconds = 900
+#
+# Optional gates. Left unset on purpose — no numeric value is specified by the
+# project, so none is invented. Unset disables the gate.
+# max_drawdown_bps = ...           # anti-pump retracement (qualification, not stop-loss)
+# max_roundtrip_loss_bps = ...     # round-trip execution-economics bound
+# max_price_impact_bps = ...       # buy price-impact bound

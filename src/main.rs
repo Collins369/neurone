@@ -78,6 +78,16 @@ fn run() -> anyhow::Result<()> {
                 "quote bench: quotes={} ns_per_quote={:.0} p50={}ns p95={}ns p99={}ns",
                 q.quotes, q.ns_per_quote, q.p50_ns, q.p95_ns, q.p99_ns
             );
+            let s = neurone::bench::strategy_microbench(n);
+            println!(
+                "strategy bench: evals={} ns_per_eval={:.0} p50={}ns p95={}ns p99={}ns ns_per_volume_update={:.1}",
+                s.evaluations,
+                s.ns_per_eval,
+                s.eval_p50_ns,
+                s.eval_p95_ns,
+                s.eval_p99_ns,
+                s.ns_per_volume_update
+            );
             Ok::<(), anyhow::Error>(())
         }),
         "check" => {

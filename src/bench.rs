@@ -44,6 +44,85 @@ pub struct QuoteBenchReport {
     pub ns_per_quote: f64,
 }
 
+/// M4 strategy evaluation + rolling-volume update latency.
+#[derive(Debug, Clone)]
+pub struct StrategyBenchReport {
+    pub evaluations: u64,
+    pub eval_p50_ns: u64,
+    pub eval_p95_ns: u64,
+    pub eval_p99_ns: u64,
+    pub ns_per_eval: f64,
+    pub volume_updates: u64,
+    pub ns_per_volume_update: f64,
+}
+
+fn percentiles(samples: &mut [u64]) -> (u64, u64, u64) {
+    if samples.is_empty() {
+        return (0, 0, 0);
+    }
+    samples.sort_unstable();
+    let at = |q: f64| samples[((samples.len() - 1) as f64 * q) as usize];
+    (at(0.50), at(0.95), at(0.99))
+}
+
+/// Measure M4 qualification evaluation and rolling-volume update latency.
+pub fn strategy_microbench(iterations: u64) -> StrategyBenchReport {
+    use crate::decode::Venue;
+    use crate::events::MarketKey;
+    use crate::strategy::{self, Decision, StrategyConfig};
+
+    let cfg = StrategyConfig {
+        sol_usd_price_micros: Some(1_000_000_000),
+        ..Default::default()
+    };
+    let mut m = crate::market::MarketState::new(MarketKey([7u8; 32]), 0);
+    m.venue = Some(Venue::PumpFun);
+    m.base_mint = Some(MarketKey([0xA1u8; 32]));
+    m.token_total_supply = 5_000_000_000_000_000;
+    m.virtual_base_reserve = 1_000_000_000_000_000;
+    m.virtual_quote_reserve = 1_000_000_000;
+    m.base_reserve = 800_000_000_000_000;
+    m.quote_reserve = 5_000_000_000;
+    m.reserves_known = true;
+    m.last_reserve_slot = 1_000;
+    m.last_slot = 1_000;
+    m.last_fee_bps = Some(95);
+    m.created_at_slot = 900;
+    m.volume.record(990, true, 1_000_000_000, 1);
+
+    let n = iterations.max(1);
+    let mut eval_samples = Vec::with_capacity(n as usize);
+    let mut sink = 0u64;
+    for _ in 0..n {
+        let t = Instant::now();
+        let d = strategy::evaluate(&m, 1_000, 150, &cfg, cfg.sol_usd_price_micros);
+        eval_samples.push(t.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64);
+        sink = sink.wrapping_add(matches!(d, Decision::Qualified) as u64);
+    }
+    let eval_total: u64 = eval_samples.iter().sum();
+    let eval = StrategyBenchReport {
+        evaluations: n,
+        eval_p50_ns: percentiles(&mut eval_samples).0,
+        eval_p95_ns: percentiles(&mut eval_samples).1,
+        eval_p99_ns: percentiles(&mut eval_samples).2,
+        ns_per_eval: eval_total as f64 / n as f64,
+        volume_updates: n,
+        ns_per_volume_update: 0.0,
+    };
+    // Rolling-volume update latency.
+    let t = Instant::now();
+    for i in 0..n {
+        m.volume.record(1_000 + i, true, 1, 1);
+    }
+    let vns = t.elapsed().as_nanos() as f64 / n as f64;
+    std::hint::black_box(sink);
+    std::hint::black_box(eval_total);
+    StrategyBenchReport {
+        ns_per_volume_update: vns,
+        ..eval
+    }
+}
+
 /// Measure `quote_buy`/`quote_sell` latency on a representative market.
 pub fn quote_microbench(iterations: u64) -> QuoteBenchReport {
     use crate::decode::Venue;
@@ -150,11 +229,13 @@ pub async fn run(config: &Config, events: u64, rate_per_sec: Option<u64>) -> Res
         config.telemetry.latency_boundaries_ns.clone(),
     );
     let (handle, shutdown) = shutdown_channel();
-    let (engine, shard_handles) = Engine::start(
+    let (engine, shard_handles) = Engine::start_with_strategy(
         config.runtime.shards,
         config.runtime.shard_channel_capacity,
         Arc::clone(&metrics),
         shutdown,
+        Arc::new(config.strategy.clone()),
+        config.market.reserve_stale_slots,
     );
     let mut source = SimulatedSource::new(config.ingest.simulated.markets, 0x0042_454E_4348);
 

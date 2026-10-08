@@ -34,6 +34,7 @@ fn account_event(
         is_startup: false,
         txn_signature: None,
         decoded,
+        pyth_sol_usd: None,
     }))
 }
 

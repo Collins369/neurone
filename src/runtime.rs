@@ -29,11 +29,13 @@ pub async fn run(config: Config) -> Result<()> {
     );
     let (shutdown_handle, shutdown) = shutdown_channel();
 
-    let (engine, shard_handles) = Engine::start(
+    let (engine, shard_handles) = Engine::start_with_strategy(
         config.runtime.shards,
         config.runtime.shard_channel_capacity,
         Arc::clone(&metrics),
         shutdown.clone(),
+        Arc::new(config.strategy.clone()),
+        config.market.reserve_stale_slots,
     );
 
     tracing::info!(

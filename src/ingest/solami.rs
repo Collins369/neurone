@@ -396,6 +396,21 @@ pub fn build_subscribe_request(
         );
     }
 
+    // Exact-address SOL/USD reference accounts (Pyth `PriceUpdateV2`). One
+    // bounded address filter; decoded into the reference state, not a market.
+    if !cfg.filters.sol_usd_accounts.is_empty() {
+        accounts.insert(
+            "sol_usd".to_string(),
+            SubscribeRequestFilterAccounts {
+                account: cfg.filters.sol_usd_accounts.clone(),
+                owner: Vec::new(),
+                filters: Vec::new(),
+                nonempty_txn_signature: None,
+                ..Default::default()
+            },
+        );
+    }
+
     let mut transactions: HashMap<String, SubscribeRequestFilterTransactions> = HashMap::new();
     if !cfg.filters.transaction_programs.is_empty() {
         transactions.insert(
@@ -542,7 +557,13 @@ mod tests {
 
         let c = IngestConfig::default();
         let req = build_subscribe_request(&c, None).unwrap();
-        assert_eq!(req.accounts.len(), 2, "curves + pools, nothing else");
+        assert_eq!(req.accounts.len(), 3, "curves + pools + pyth sol/usd");
+        let pyth = req.accounts.get("sol_usd").expect("sol_usd account filter");
+        assert_eq!(
+            pyth.account,
+            vec!["7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE".to_string()]
+        );
+        assert!(pyth.owner.is_empty(), "exact-address filter, no program");
         let acct = req
             .accounts
             .get("accounts_extra_0")

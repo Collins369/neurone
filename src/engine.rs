@@ -19,8 +19,10 @@ use tokio::task::JoinHandle;
 use crate::error::{Error, Result};
 use crate::events::{EventKind, MarketKey, NormalizedEvent};
 use crate::hash::shard_for;
+use crate::reference::SolUsdReferenceState;
 use crate::shard::{Shard, ShardMsg, ShardSnapshot};
 use crate::shutdown::Shutdown;
+use crate::strategy::StrategyConfig;
 use crate::telemetry::Metrics;
 
 /// Routing handle + owned shard tasks.
@@ -29,6 +31,7 @@ pub struct Engine {
     senders: Vec<mpsc::Sender<ShardMsg>>,
     num_shards: usize,
     metrics: Arc<Metrics>,
+    sol_usd: Arc<SolUsdReferenceState>,
 }
 
 impl Engine {
@@ -39,12 +42,38 @@ impl Engine {
         metrics: Arc<Metrics>,
         shutdown: Shutdown,
     ) -> (Engine, Vec<JoinHandle<()>>) {
+        Self::start_with_strategy(
+            num_shards,
+            channel_capacity,
+            metrics,
+            shutdown,
+            Arc::new(StrategyConfig::default()),
+            crate::config::MarketConfig::default().reserve_stale_slots,
+        )
+    }
+
+    /// Spawn `num_shards` with an explicit M4 strategy configuration.
+    pub fn start_with_strategy(
+        num_shards: usize,
+        channel_capacity: usize,
+        metrics: Arc<Metrics>,
+        shutdown: Shutdown,
+        strategy: Arc<StrategyConfig>,
+        reserve_stale_slots: u64,
+    ) -> (Engine, Vec<JoinHandle<()>>) {
         assert!(num_shards >= 1, "engine requires at least one shard");
+        let sol_usd = Arc::new(SolUsdReferenceState::new());
         let mut senders = Vec::with_capacity(num_shards);
         let mut handles = Vec::with_capacity(num_shards);
         for id in 0..num_shards {
             let (tx, rx) = mpsc::channel(channel_capacity);
-            let shard = Shard::new(id, Arc::clone(&metrics));
+            let shard = Shard::new(
+                id,
+                Arc::clone(&metrics),
+                Arc::clone(&strategy),
+                reserve_stale_slots,
+                Arc::clone(&sol_usd),
+            );
             let shutdown = shutdown.clone();
             handles.push(tokio::spawn(async move { shard.run(rx, shutdown).await }));
             senders.push(tx);
@@ -54,6 +83,7 @@ impl Engine {
                 senders,
                 num_shards,
                 metrics,
+                sol_usd,
             },
             handles,
         )
@@ -61,6 +91,11 @@ impl Engine {
 
     pub fn num_shards(&self) -> usize {
         self.num_shards
+    }
+
+    /// Shared SOL/USD reference state (Pyth over Yellowstone).
+    pub fn sol_usd(&self) -> Arc<SolUsdReferenceState> {
+        Arc::clone(&self.sol_usd)
     }
 
     /// Deterministic shard for a market identity.
@@ -91,6 +126,14 @@ impl Engine {
                 }
             }
             EventKind::Account(a) => {
+                // The Pyth SOL/USD price account feeds the reference state, not
+                // a market shard: no fake market, no shard routing.
+                if let Some(u) = &a.pyth_sol_usd {
+                    if self.sol_usd.update(u, crate::clock::now_ns() as u64) {
+                        self.metrics.incr_sol_usd_reference();
+                    }
+                    return Ok(());
+                }
                 let shard = self.shard_of(&a.pubkey);
                 self.send(
                     &self.senders[shard],

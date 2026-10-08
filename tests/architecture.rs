@@ -36,6 +36,7 @@ fn account_event(k: MarketKey, wv: u64, digest: u64, slot: u64) -> NormalizedEve
         is_startup: false,
         txn_signature: None,
         decoded: None,
+        pyth_sol_usd: None,
     }))
 }
 

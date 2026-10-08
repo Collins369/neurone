@@ -43,6 +43,7 @@ pub struct Config {
     pub ingest: IngestConfig,
     pub telemetry: TelemetryConfig,
     pub market: MarketConfig,
+    pub strategy: crate::strategy::StrategyConfig,
 }
 
 /// Market-state infrastructure settings (not strategy rules).
@@ -132,6 +133,10 @@ pub struct FilterConfig {
     /// can bootstrap its vault balances from transaction `postTokenBalances`.
     /// Each entry is one account type, never a token-account firehose.
     pub extra_accounts: Vec<AccountFilterConfig>,
+    /// Exact account addresses streamed as the SOL/USD reference (Pyth
+    /// `PriceUpdateV2`), routed to the reference state rather than to a market.
+    /// Bounded (one address); never a firehose.
+    pub sol_usd_accounts: Vec<String>,
 }
 
 /// Offline generator settings (no live credential required).
@@ -235,6 +240,8 @@ impl Default for FilterConfig {
                 programs: vec![pumpswap],
                 memcmp_base58: Some(bs58::encode(crate::decode::pump_amm::POOL_DISC).into_string()),
             }],
+            // The Pyth SOL/USD price account: one bounded account subscription.
+            sol_usd_accounts: vec![crate::pyth::SOL_USD_PRICE_ACCOUNT.to_string()],
         }
     }
 }
@@ -380,6 +387,7 @@ impl Config {
                 ("account_program", &self.ingest.filters.account_programs),
                 ("account_address", &self.ingest.filters.account_addresses),
                 ("extra_account_program", &extra_programs),
+                ("sol_usd_account", &self.ingest.filters.sol_usd_accounts),
             ] {
                 for p in list {
                     let decoded = bs58::decode(p)

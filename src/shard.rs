@@ -12,8 +12,10 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::events::{EventKind, MarketKey, NormalizedEvent};
-use crate::market::MarketState;
+use crate::market::{MarketState, MarketStatus};
+use crate::reference::SolUsdReferenceState;
 use crate::shutdown::Shutdown;
+use crate::strategy::{self, Decision, SolUsdSource, StrategyConfig};
 use crate::telemetry::Metrics;
 
 /// Number of recent transaction signatures retained per shard for replay
@@ -89,16 +91,28 @@ pub struct Shard {
     recent_tx: SignatureRing,
     last_slot: u64,
     metrics: Arc<Metrics>,
+    strategy: Arc<StrategyConfig>,
+    reserve_stale_slots: u64,
+    sol_usd: Arc<SolUsdReferenceState>,
 }
 
 impl Shard {
-    pub fn new(id: usize, metrics: Arc<Metrics>) -> Self {
+    pub fn new(
+        id: usize,
+        metrics: Arc<Metrics>,
+        strategy: Arc<StrategyConfig>,
+        reserve_stale_slots: u64,
+        sol_usd: Arc<SolUsdReferenceState>,
+    ) -> Self {
         Self {
             id,
             markets: HashMap::new(),
             recent_tx: SignatureRing::new(RECENT_SIGNATURE_CAPACITY),
             last_slot: 0,
             metrics,
+            strategy,
+            reserve_stale_slots,
+            sol_usd,
         }
     }
 
@@ -178,6 +192,7 @@ impl Shard {
                         } else {
                             self.metrics.incr_stale();
                         }
+                        self.evaluate_market(a.pubkey);
                     }
                     EventKind::Transaction(t) => {
                         self.metrics.add_decode_rejected(t.decode_rejected);
@@ -201,6 +216,9 @@ impl Shard {
                                         market.invalidate(t.slot);
                                         self.metrics.incr_reserve_invalidation();
                                     }
+                                    // An invalidated market must not stay
+                                    // QUALIFIED.
+                                    self.evaluate_market(*key);
                                 }
                             }
                             // Markets created by this transaction.
@@ -209,6 +227,7 @@ impl Shard {
                                 market.note_slot(t.slot);
                                 market.apply_create(created, now);
                                 self.metrics.incr_decoded();
+                                self.evaluate_market(created.market_key);
                             }
                             // Swaps: reserve/volume updates on the owning market.
                             for swap in &t.swaps {
@@ -218,6 +237,7 @@ impl Shard {
                                 self.metrics.incr_volume_update();
                                 self.metrics.incr_swap(swap.venue);
                                 applied += 1;
+                                self.evaluate_market(swap.market_key);
                             }
                             // PumpSwap current-state bootstrap: compose a pool's
                             // effective reserves from authoritative transaction
@@ -243,6 +263,7 @@ impl Shard {
                                                 self.metrics.incr_vault_balance_bootstrap();
                                             }
                                             applied += 1;
+                                            self.evaluate_market(*key);
                                         }
                                     }
                                 }
@@ -285,6 +306,59 @@ impl Shard {
         self.markets
             .entry(key)
             .or_insert_with(|| MarketState::new(key, now))
+    }
+
+    /// Run the M4 strategy for one market and record the outcome.
+    ///
+    /// Only the owning shard evaluates its own markets, so this is a local,
+    /// lock-free, allocation-free call. Inactive strategy (no configured quote
+    /// price) is a no-op.
+    fn evaluate_market(&mut self, key: MarketKey) {
+        let current_slot = self.last_slot;
+        let stale_slots = self.reserve_stale_slots;
+        // Resolve the SOL/USD reference locally (no network, no blocking).
+        let sol_usd_price_micros = match self.strategy.sol_usd_source {
+            SolUsdSource::Static => self.strategy.sol_usd_price_micros,
+            SolUsdSource::PythYellowstone => self.sol_usd.read_micros(
+                crate::clock::now_ns() as u64,
+                self.strategy.sol_usd_max_staleness_ms,
+            ),
+        };
+        let active = match self.strategy.sol_usd_source {
+            SolUsdSource::Static => sol_usd_price_micros.is_some(),
+            // Always evaluate in Pyth mode; a missing/stale reference fails closed.
+            SolUsdSource::PythYellowstone => true,
+        };
+        if !active {
+            return;
+        }
+        let Some(market) = self.markets.get_mut(&key) else {
+            return;
+        };
+        let t0 = crate::clock::now_ns();
+        let decision = strategy::evaluate(
+            market,
+            current_slot,
+            stale_slots,
+            &self.strategy,
+            sol_usd_price_micros,
+        );
+        let elapsed = (crate::clock::now_ns().saturating_sub(t0)).min(u64::MAX as u128) as u64;
+        self.metrics.observe_strategy_eval(elapsed);
+        self.metrics.incr_strategy_evaluated();
+        match decision {
+            Decision::Qualified => {
+                if market.status != MarketStatus::Qualified {
+                    self.metrics.incr_strategy_qualified();
+                }
+                market.status = MarketStatus::Qualified;
+                market.last_qualified_version = market.strategy_version;
+            }
+            Decision::Rejected(reason) => {
+                market.status = MarketStatus::Observing;
+                self.metrics.incr_strategy_rejected(reason);
+            }
+        }
     }
 }
 

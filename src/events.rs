@@ -170,6 +170,9 @@ pub struct AccountUpdate {
     pub txn_signature: Option<[u8; SIGNATURE_LEN]>,
     /// Protocol-decoded account state, when the owner program is known.
     pub decoded: Option<DecodedAccount>,
+    /// Decoded Pyth SOL/USD `PriceUpdateV2`, when this is the Pyth SOL/USD feed
+    /// account. Routed to the SOL/USD reference state, never to a market.
+    pub pyth_sol_usd: Option<crate::pyth::SolUsdPriceUpdate>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -290,6 +293,10 @@ fn normalize_account(
     let info = a.account.as_ref()?;
     let pubkey = MarketKey::from_slice(&info.pubkey)?;
     let owner = MarketKey::from_slice(&info.owner);
+    // The Pyth SOL/USD price account is a reference feed, not a market.
+    let pyth_sol_usd = (pubkey.as_bytes() == &crate::pyth::SOL_USD_PRICE_ACCOUNT_BYTES)
+        .then(|| crate::pyth::decode_sol_usd_price_update(&info.data))
+        .flatten();
     Some(AccountUpdate {
         pubkey,
         slot: a.slot,
@@ -301,6 +308,7 @@ fn normalize_account(
         is_startup: a.is_startup,
         txn_signature: info.txn_signature.as_deref().and_then(to_signature),
         decoded: owner.and_then(|o| decode::decode_account(&o, &info.data)),
+        pyth_sol_usd,
     })
 }
 

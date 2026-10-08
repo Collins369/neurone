@@ -91,6 +91,22 @@ pub struct Metrics {
     pub(crate) reserve_revalidations: AtomicU64,
     pub(crate) vault_balance_updates: AtomicU64,
     pub(crate) vault_balance_bootstraps: AtomicU64,
+    pub(crate) strategy_evaluated: AtomicU64,
+    pub(crate) strategy_qualified: AtomicU64,
+    pub(crate) strategy_rejected_unsupported: AtomicU64,
+    pub(crate) strategy_rejected_too_old: AtomicU64,
+    pub(crate) strategy_rejected_insufficient_freshness: AtomicU64,
+    pub(crate) strategy_rejected_already_pumped: AtomicU64,
+    pub(crate) strategy_rejected_low_liquidity: AtomicU64,
+    pub(crate) strategy_rejected_low_5m_volume: AtomicU64,
+    pub(crate) strategy_rejected_mcap: AtomicU64,
+    pub(crate) strategy_rejected_safety: AtomicU64,
+    pub(crate) strategy_rejected_buy: AtomicU64,
+    pub(crate) strategy_rejected_sell: AtomicU64,
+    pub(crate) strategy_rejected_execution: AtomicU64,
+    pub(crate) strategy_rejected_state: AtomicU64,
+    pub(crate) strategy_rejected_consumed: AtomicU64,
+    pub(crate) sol_usd_reference_updates: AtomicU64,
     pub(crate) swaps_pumpfun: AtomicU64,
     pub(crate) swaps_pumpswap: AtomicU64,
     pub(crate) invalid_events: AtomicU64,
@@ -105,6 +121,7 @@ pub struct Metrics {
     end_to_end: Histogram,
     processing: Histogram,
     decode: Histogram,
+    strategy_eval: Histogram,
 }
 
 /// Immutable point-in-time view of [`Metrics`].
@@ -125,6 +142,26 @@ pub struct MetricsSnapshot {
     /// Subset of `vault_balance_updates` that took a market from `Unknown` to
     /// `Known` (a true late-market bootstrap).
     pub vault_balance_bootstraps: u64,
+    /// M4 strategy evaluations performed.
+    pub markets_evaluated: u64,
+    /// M4 markets that newly qualified.
+    pub markets_qualified: u64,
+    pub rejected_unsupported: u64,
+    pub rejected_too_old: u64,
+    /// Rejections where chain-proven creation/history could not be established.
+    pub rejected_insufficient_freshness: u64,
+    pub rejected_already_pumped: u64,
+    pub rejected_low_liquidity: u64,
+    pub rejected_low_5m_volume: u64,
+    pub rejected_mcap: u64,
+    pub rejected_safety: u64,
+    pub rejected_buy: u64,
+    pub rejected_sell: u64,
+    pub rejected_execution: u64,
+    pub rejected_state: u64,
+    pub rejected_consumed: u64,
+    /// Accepted Pyth SOL/USD reference updates (Yellowstone account stream).
+    pub sol_usd_reference_updates: u64,
     pub swaps_pumpfun: u64,
     pub swaps_pumpswap: u64,
     pub invalid_events: u64,
@@ -154,6 +191,10 @@ pub struct MetricsSnapshot {
     pub decode_p95_ns: u64,
     pub decode_p99_ns: u64,
     pub decode_max_ns: u64,
+    /// M4 qualification evaluation latency.
+    pub strategy_eval_p50_ns: u64,
+    pub strategy_eval_p95_ns: u64,
+    pub strategy_eval_p99_ns: u64,
 }
 
 impl Metrics {
@@ -176,6 +217,22 @@ impl Metrics {
             reserve_revalidations: AtomicU64::new(0),
             vault_balance_updates: AtomicU64::new(0),
             vault_balance_bootstraps: AtomicU64::new(0),
+            strategy_evaluated: AtomicU64::new(0),
+            strategy_qualified: AtomicU64::new(0),
+            strategy_rejected_unsupported: AtomicU64::new(0),
+            strategy_rejected_too_old: AtomicU64::new(0),
+            strategy_rejected_insufficient_freshness: AtomicU64::new(0),
+            strategy_rejected_already_pumped: AtomicU64::new(0),
+            strategy_rejected_low_liquidity: AtomicU64::new(0),
+            strategy_rejected_low_5m_volume: AtomicU64::new(0),
+            strategy_rejected_mcap: AtomicU64::new(0),
+            strategy_rejected_safety: AtomicU64::new(0),
+            strategy_rejected_buy: AtomicU64::new(0),
+            strategy_rejected_sell: AtomicU64::new(0),
+            strategy_rejected_execution: AtomicU64::new(0),
+            strategy_rejected_state: AtomicU64::new(0),
+            strategy_rejected_consumed: AtomicU64::new(0),
+            sol_usd_reference_updates: AtomicU64::new(0),
             swaps_pumpfun: AtomicU64::new(0),
             swaps_pumpswap: AtomicU64::new(0),
             invalid_events: AtomicU64::new(0),
@@ -189,7 +246,8 @@ impl Metrics {
             shard_activity,
             end_to_end: Histogram::new(latency_bounds.clone()),
             processing: Histogram::new(latency_bounds.clone()),
-            decode: Histogram::new(latency_bounds),
+            decode: Histogram::new(latency_bounds.clone()),
+            strategy_eval: Histogram::new(latency_bounds),
         })
     }
 
@@ -253,6 +311,49 @@ impl Metrics {
     /// transaction `post_token_balances`.
     pub fn incr_vault_balance_bootstrap(&self) {
         self.vault_balance_bootstraps
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record one M4 qualification-evaluation duration, nanoseconds.
+    pub fn observe_strategy_eval(&self, ns: u64) {
+        self.strategy_eval.record(ns);
+    }
+
+    /// Count one M4 market evaluation.
+    pub fn incr_strategy_evaluated(&self) {
+        self.strategy_evaluated.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count a market that newly qualified.
+    pub fn incr_strategy_qualified(&self) {
+        self.strategy_qualified.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count a deterministic M4 rejection, bucketed by reason.
+    pub fn incr_strategy_rejected(&self, reason: crate::strategy::RejectReason) {
+        use crate::strategy::RejectReason::*;
+        let counter = match reason {
+            UnsupportedMarket => &self.strategy_rejected_unsupported,
+            TokenTooOld => &self.strategy_rejected_too_old,
+            InsufficientFreshnessData => &self.strategy_rejected_insufficient_freshness,
+            AlreadyPumped => &self.strategy_rejected_already_pumped,
+            LowLiquidity => &self.strategy_rejected_low_liquidity,
+            Low5mVolume => &self.strategy_rejected_low_5m_volume,
+            McapTooLow | McapTooHigh => &self.strategy_rejected_mcap,
+            UnsafeToken | UnsafeMarket => &self.strategy_rejected_safety,
+            BuyUnavailable => &self.strategy_rejected_buy,
+            SellUnavailable => &self.strategy_rejected_sell,
+            BadExecutionEconomics => &self.strategy_rejected_execution,
+            StateUnknown | StateStale | StateInvalidated => &self.strategy_rejected_state,
+            ReferenceUnavailable => &self.strategy_rejected_state,
+            AlreadyConsumed => &self.strategy_rejected_consumed,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count an accepted SOL/USD reference update.
+    pub fn incr_sol_usd_reference(&self) {
+        self.sol_usd_reference_updates
             .fetch_add(1, Ordering::Relaxed);
     }
 
@@ -329,6 +430,26 @@ impl Metrics {
             reserve_revalidations: self.reserve_revalidations.load(Ordering::Relaxed),
             vault_balance_updates: self.vault_balance_updates.load(Ordering::Relaxed),
             vault_balance_bootstraps: self.vault_balance_bootstraps.load(Ordering::Relaxed),
+            markets_evaluated: self.strategy_evaluated.load(Ordering::Relaxed),
+            markets_qualified: self.strategy_qualified.load(Ordering::Relaxed),
+            rejected_unsupported: self.strategy_rejected_unsupported.load(Ordering::Relaxed),
+            rejected_too_old: self.strategy_rejected_too_old.load(Ordering::Relaxed),
+            rejected_insufficient_freshness: self
+                .strategy_rejected_insufficient_freshness
+                .load(Ordering::Relaxed),
+            rejected_already_pumped: self
+                .strategy_rejected_already_pumped
+                .load(Ordering::Relaxed),
+            rejected_low_liquidity: self.strategy_rejected_low_liquidity.load(Ordering::Relaxed),
+            rejected_low_5m_volume: self.strategy_rejected_low_5m_volume.load(Ordering::Relaxed),
+            rejected_mcap: self.strategy_rejected_mcap.load(Ordering::Relaxed),
+            rejected_safety: self.strategy_rejected_safety.load(Ordering::Relaxed),
+            rejected_buy: self.strategy_rejected_buy.load(Ordering::Relaxed),
+            rejected_sell: self.strategy_rejected_sell.load(Ordering::Relaxed),
+            rejected_execution: self.strategy_rejected_execution.load(Ordering::Relaxed),
+            rejected_state: self.strategy_rejected_state.load(Ordering::Relaxed),
+            rejected_consumed: self.strategy_rejected_consumed.load(Ordering::Relaxed),
+            sol_usd_reference_updates: self.sol_usd_reference_updates.load(Ordering::Relaxed),
             swaps_pumpfun: self.swaps_pumpfun.load(Ordering::Relaxed),
             swaps_pumpswap: self.swaps_pumpswap.load(Ordering::Relaxed),
             invalid_events: self.invalid_events.load(Ordering::Relaxed),
@@ -355,6 +476,9 @@ impl Metrics {
             decode_p95_ns: self.decode.quantile(0.95),
             decode_p99_ns: self.decode.quantile(0.99),
             decode_max_ns: self.decode.quantile(1.0),
+            strategy_eval_p50_ns: self.strategy_eval.quantile(0.50),
+            strategy_eval_p95_ns: self.strategy_eval.quantile(0.95),
+            strategy_eval_p99_ns: self.strategy_eval.quantile(0.99),
         }
     }
 
@@ -391,6 +515,20 @@ pub async fn report_loop(metrics: Arc<Metrics>, interval: Duration, shutdown: Sh
                     reserve_revalidations = now.reserve_revalidations,
                     vault_balance_updates = now.vault_balance_updates,
                     vault_balance_bootstraps = now.vault_balance_bootstraps,
+                    markets_evaluated = now.markets_evaluated,
+                    markets_qualified = now.markets_qualified,
+                    rejected_too_old = now.rejected_too_old,
+                    rejected_insufficient_freshness = now.rejected_insufficient_freshness,
+                    rejected_already_pumped = now.rejected_already_pumped,
+                    rejected_low_liquidity = now.rejected_low_liquidity,
+                    rejected_mcap = now.rejected_mcap,
+                    rejected_low_5m_volume = now.rejected_low_5m_volume,
+                    rejected_state = now.rejected_state,
+                    rejected_buy = now.rejected_buy,
+                    rejected_sell = now.rejected_sell,
+                    rejected_reference = now.rejected_state,
+                    sol_usd_reference_updates = now.sol_usd_reference_updates,
+                    strategy_eval_p50_us = now.strategy_eval_p50_ns as f64 / 1_000.0,
                     events_per_second = (delta_events as f64 / secs).round() as u64,
                     state_updates = now.state_updates,
                     state_updates_per_second = (delta_updates as f64 / secs).round() as u64,

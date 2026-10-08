@@ -82,6 +82,7 @@ impl SimulatedSource {
                 is_startup: false,
                 txn_signature: None,
                 decoded: None,
+                pyth_sol_usd: None,
             }))
         } else {
             // Transaction touching this market (plus a couple of neighbours).

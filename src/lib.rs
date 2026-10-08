@@ -24,10 +24,13 @@ pub mod events;
 pub mod hash;
 pub mod ingest;
 pub mod market;
+pub mod pyth;
 pub mod quote;
+pub mod reference;
 pub mod runtime;
 pub mod shard;
 pub mod shutdown;
+pub mod strategy;
 pub mod telemetry;
 pub mod validate;
 
