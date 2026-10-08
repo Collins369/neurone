@@ -104,6 +104,11 @@ pub struct StrategyConfig {
     /// Maximum acceptable buy price impact in basis points versus the reference
     /// price. `None` disables this economic gate.
     pub max_price_impact_bps: Option<u64>,
+    /// M5: maximum age of an armed execution context, in slots, measured from
+    /// its first arm slot. An armed context must not outlive the reserve-
+    /// freshness horizon it was armed against, so the default matches
+    /// `market.reserve_stale_slots` (150 slots ≈ 60 s). Expiry fails closed.
+    pub max_arm_age_slots: u64,
 }
 
 impl Default for StrategyConfig {
@@ -122,6 +127,7 @@ impl Default for StrategyConfig {
             probe_notional_lamports: 100_000_000, // 0.1 SOL
             max_roundtrip_loss_bps: None,
             max_price_impact_bps: None,
+            max_arm_age_slots: 150,
         }
     }
 }

@@ -12,7 +12,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::events::{EventKind, MarketKey, NormalizedEvent};
-use crate::market::{MarketState, MarketStatus};
+use crate::market::{ArmedContext, MarketState, MarketStatus};
+use crate::quote::Side;
 use crate::reference::SolUsdReferenceState;
 use crate::shutdown::Shutdown;
 use crate::strategy::{self, Decision, SolUsdSource, StrategyConfig};
@@ -314,7 +315,6 @@ impl Shard {
     /// lock-free, allocation-free call. Inactive strategy (no configured quote
     /// price) is a no-op.
     fn evaluate_market(&mut self, key: MarketKey) {
-        let current_slot = self.last_slot;
         let stale_slots = self.reserve_stale_slots;
         // Resolve the SOL/USD reference locally (no network, no blocking).
         let sol_usd_price_micros = match self.strategy.sol_usd_source {
@@ -335,6 +335,10 @@ impl Shard {
         let Some(market) = self.markets.get_mut(&key) else {
             return;
         };
+        // The market's own last slot is the best available clock for a market
+        // that has no fresh global slot event (e.g. unit tests); in production
+        // the global watermark always dominates.
+        let current_slot = self.last_slot.max(market.last_slot);
         let t0 = crate::clock::now_ns();
         let decision = strategy::evaluate(
             market,
@@ -348,17 +352,81 @@ impl Shard {
         self.metrics.incr_strategy_evaluated();
         match decision {
             Decision::Qualified => {
-                if market.status != MarketStatus::Qualified {
+                // Count a *new* qualification episode (not an armed market that
+                // remains qualified across updates).
+                if !matches!(market.status, MarketStatus::Qualified | MarketStatus::Armed) {
                     self.metrics.incr_strategy_qualified();
                 }
-                market.status = MarketStatus::Qualified;
                 market.last_qualified_version = market.strategy_version;
+                // M5: pre-arm (deterministic, shard-local, no I/O).
+                Self::arm_or_refresh(
+                    market,
+                    current_slot,
+                    sol_usd_price_micros,
+                    self.strategy.max_arm_age_slots,
+                    &self.metrics,
+                );
             }
             Decision::Rejected(reason) => {
+                // M5: a market that stops qualifying can no longer be armed.
+                if market.armed.is_some() {
+                    market.armed = None;
+                    self.metrics.incr_arm_invalidated();
+                }
                 market.status = MarketStatus::Observing;
                 self.metrics.incr_strategy_rejected(reason);
             }
         }
+    }
+
+    /// M5 arm/refresh. Only called when M4 currently qualifies the market, so
+    /// every arming precondition (known/current state, trustworthy reserves,
+    /// executable buy+sell routes, valid economics, valid SOL/USD reference,
+    /// not consumed) has just been re-checked by `strategy::evaluate`.
+    ///
+    /// The armed context contains no mutable on-chain values: M6 re-reads the
+    /// reserves/quote/reference at the trigger and must reject the context if
+    /// `market_version` changed.
+    fn arm_or_refresh(
+        market: &mut MarketState,
+        current_slot: u64,
+        sol_usd_price_micros: Option<u64>,
+        max_arm_age_slots: u64,
+        metrics: &Metrics,
+    ) {
+        if let Some(ctx) = market.armed {
+            if ctx.is_expired(current_slot, max_arm_age_slots) {
+                // Fail closed: drop the stale context, then re-arm below from the
+                // current (just-revalidated) state.
+                market.armed = None;
+                metrics.incr_arm_expired();
+            } else if ctx.market_version == market.strategy_version {
+                // Already armed under the exact current version -> idempotent.
+                metrics.incr_arm_already_armed();
+                market.status = MarketStatus::Armed;
+                return;
+            } else {
+                // Market changed but still qualifies: refresh the context under
+                // the new version (M6 sees the new market_version).
+                market.armed = Some(ArmedContext {
+                    market_version: market.strategy_version,
+                    sol_usd_micros: sol_usd_price_micros,
+                    ..ctx
+                });
+                metrics.incr_arm_refreshed();
+                market.status = MarketStatus::Armed;
+                return;
+            }
+        }
+        market.armed = Some(ArmedContext {
+            side: Side::Buy,
+            armed_slot: current_slot,
+            armed_ns: crate::clock::now_ns() as u64,
+            market_version: market.strategy_version,
+            sol_usd_micros: sol_usd_price_micros,
+        });
+        market.status = MarketStatus::Armed;
+        metrics.incr_markets_armed();
     }
 }
 

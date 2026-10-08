@@ -124,3 +124,9 @@ max_token_age_seconds = 900
 # max_drawdown_bps = ...           # anti-pump retracement (qualification, not stop-loss)
 # max_roundtrip_loss_bps = ...     # round-trip execution-economics bound
 # max_price_impact_bps = ...       # buy price-impact bound
+#
+# M5 pre-arming: maximum age of an armed execution context, in slots, measured
+# from its first arm slot. Defaults to the reserve-freshness horizon (150 slots
+# ≈ 60 s): an armed context must not outlive the reserve window it was armed
+# against. Expiry fails closed.
+max_arm_age_slots = 150

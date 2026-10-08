@@ -23,13 +23,51 @@ use crate::events::{AccountUpdate, MarketKey, TransactionUpdate, VaultBalance};
 /// Default number of sparse per-slot volume buckets retained per market.
 pub const DEFAULT_VOLUME_BUCKETS: usize = 1024;
 
-/// Lifecycle status. M4 evaluates `Observing -> Qualified`; arming and beyond
-/// are later milestones.
+/// Lifecycle status.
+///
+/// ```text
+/// Observing -> Qualified            (M4)
+/// Qualified -> Armed                (M5 pre-arming)
+/// Armed -> Triggered -> ...         (M6 execution boundary)
+/// ```
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarketStatus {
     Observing,
     /// M4: the market currently satisfies the deterministic strategy gates.
     Qualified,
+    /// M5: a deterministic execution context has been prepared and validated
+    /// for this qualified market, ready for M6 to evaluate the trigger.
+    Armed,
+}
+
+/// M5 armed execution context.
+///
+/// It captures only what makes the armed claim meaningful and is intentionally
+/// **immutable-data-only**: no transaction, no signed payload, no mutable
+/// on-chain value that could silently go stale. Mutable execution fields
+/// (reserve snapshot, quote amounts, blockhash, fee) MUST be refreshed by M6 at
+/// the trigger boundary — this context records the versions/assumptions they
+/// must be revalidated against.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ArmedContext {
+    /// Planned entry side (V1 strategy is buy-side only).
+    pub side: crate::quote::Side,
+    /// First slot at which this market was armed (expiry is measured from here).
+    pub armed_slot: u64,
+    /// Monotonic ns at first arm (diagnostics only).
+    pub armed_ns: u64,
+    /// `strategy_version` at arm time; M6 rejects the context if it changed.
+    pub market_version: u64,
+    /// SOL/USD micros used at arm time (informational; M6 re-reads it live).
+    pub sol_usd_micros: Option<u64>,
+}
+
+impl ArmedContext {
+    /// Deterministic expiry: the context may not outlive `max_age_slots` from
+    /// its first arm slot. Expired => unusable (M5 drops it; M6 must not fire).
+    pub fn is_expired(&self, current_slot: u64, max_age_slots: u64) -> bool {
+        current_slot.saturating_sub(self.armed_slot) > max_age_slots
+    }
 }
 
 /// Freshness/trust of a market's reserve state (infrastructure concept, not
@@ -266,6 +304,8 @@ pub struct MarketState {
     /// Version consumed by an execution layer (0 = none). Reserved for M5; a
     /// market already consumed at the current version cannot re-qualify.
     pub consumed_version: u64,
+    /// M5 armed execution context, if this market is currently armed.
+    pub armed: Option<ArmedContext>,
 
     // Instrumentation only (monotonic ns); excluded from equality.
     pub first_seen_ns: u128,
@@ -319,6 +359,7 @@ impl MarketState {
             strategy_version: 0,
             last_qualified_version: 0,
             consumed_version: 0,
+            armed: None,
             first_seen_ns: now_ns,
             last_update_ns: now_ns,
         }
@@ -767,6 +808,7 @@ impl PartialEq for MarketState {
             && self.strategy_version == other.strategy_version
             && self.last_qualified_version == other.last_qualified_version
             && self.consumed_version == other.consumed_version
+            && self.armed == other.armed
     }
 }
 
@@ -847,7 +889,8 @@ mod tests {
         // Guards against accidental unbounded growth of the hot-path state.
         let size = std::mem::size_of::<MarketState>();
         println!("size_of::<MarketState>() = {size} bytes");
-        assert!(size <= 768, "MarketState grew unexpectedly: {size} bytes");
+        // 1024 accommodates the M5 armed context (M4 was <= 768).
+        assert!(size <= 1024, "MarketState grew unexpectedly: {size} bytes");
     }
 
     /// The MCAP peak is a running maximum: it rises on new highs and is retained

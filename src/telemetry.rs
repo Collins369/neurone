@@ -107,6 +107,11 @@ pub struct Metrics {
     pub(crate) strategy_rejected_state: AtomicU64,
     pub(crate) strategy_rejected_consumed: AtomicU64,
     pub(crate) sol_usd_reference_updates: AtomicU64,
+    pub(crate) markets_armed: AtomicU64,
+    pub(crate) arm_refreshed: AtomicU64,
+    pub(crate) arm_already_armed: AtomicU64,
+    pub(crate) arm_invalidated: AtomicU64,
+    pub(crate) arm_expired: AtomicU64,
     pub(crate) swaps_pumpfun: AtomicU64,
     pub(crate) swaps_pumpswap: AtomicU64,
     pub(crate) invalid_events: AtomicU64,
@@ -162,6 +167,16 @@ pub struct MetricsSnapshot {
     pub rejected_consumed: u64,
     /// Accepted Pyth SOL/USD reference updates (Yellowstone account stream).
     pub sol_usd_reference_updates: u64,
+    /// M5: markets newly armed (Observing/Qualified -> Armed).
+    pub markets_armed: u64,
+    /// M5: armed contexts refreshed in place after a market-version change.
+    pub arm_refreshed: u64,
+    /// M5: arm requests already armed under the current version.
+    pub arm_already_armed: u64,
+    /// M5: armed contexts dropped because the market stopped qualifying.
+    pub arm_invalidated: u64,
+    /// M5: armed contexts dropped by the arm-expiry horizon.
+    pub arm_expired: u64,
     pub swaps_pumpfun: u64,
     pub swaps_pumpswap: u64,
     pub invalid_events: u64,
@@ -233,6 +248,11 @@ impl Metrics {
             strategy_rejected_state: AtomicU64::new(0),
             strategy_rejected_consumed: AtomicU64::new(0),
             sol_usd_reference_updates: AtomicU64::new(0),
+            markets_armed: AtomicU64::new(0),
+            arm_refreshed: AtomicU64::new(0),
+            arm_already_armed: AtomicU64::new(0),
+            arm_invalidated: AtomicU64::new(0),
+            arm_expired: AtomicU64::new(0),
             swaps_pumpfun: AtomicU64::new(0),
             swaps_pumpswap: AtomicU64::new(0),
             invalid_events: AtomicU64::new(0),
@@ -357,6 +377,31 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// M5: a market newly armed (Observing/Qualified -> Armed).
+    pub fn incr_markets_armed(&self) {
+        self.markets_armed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// M5: an armed context refreshed in place after a market-version change.
+    pub fn incr_arm_refreshed(&self) {
+        self.arm_refreshed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// M5: an arm request that was already armed at the current version.
+    pub fn incr_arm_already_armed(&self) {
+        self.arm_already_armed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// M5: an armed context dropped because the market stopped qualifying.
+    pub fn incr_arm_invalidated(&self) {
+        self.arm_invalidated.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// M5: an armed context dropped by the arm-expiry horizon.
+    pub fn incr_arm_expired(&self) {
+        self.arm_expired.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Record the normalize+decode time for one update.
     pub fn record_decode(&self, ns: u64) {
         self.decode.record(ns);
@@ -450,6 +495,11 @@ impl Metrics {
             rejected_state: self.strategy_rejected_state.load(Ordering::Relaxed),
             rejected_consumed: self.strategy_rejected_consumed.load(Ordering::Relaxed),
             sol_usd_reference_updates: self.sol_usd_reference_updates.load(Ordering::Relaxed),
+            markets_armed: self.markets_armed.load(Ordering::Relaxed),
+            arm_refreshed: self.arm_refreshed.load(Ordering::Relaxed),
+            arm_already_armed: self.arm_already_armed.load(Ordering::Relaxed),
+            arm_invalidated: self.arm_invalidated.load(Ordering::Relaxed),
+            arm_expired: self.arm_expired.load(Ordering::Relaxed),
             swaps_pumpfun: self.swaps_pumpfun.load(Ordering::Relaxed),
             swaps_pumpswap: self.swaps_pumpswap.load(Ordering::Relaxed),
             invalid_events: self.invalid_events.load(Ordering::Relaxed),
@@ -528,6 +578,10 @@ pub async fn report_loop(metrics: Arc<Metrics>, interval: Duration, shutdown: Sh
                     rejected_sell = now.rejected_sell,
                     rejected_reference = now.rejected_state,
                     sol_usd_reference_updates = now.sol_usd_reference_updates,
+                    markets_armed = now.markets_armed,
+                    arm_refreshed = now.arm_refreshed,
+                    arm_invalidated = now.arm_invalidated,
+                    arm_expired = now.arm_expired,
                     strategy_eval_p50_us = now.strategy_eval_p50_ns as f64 / 1_000.0,
                     events_per_second = (delta_events as f64 / secs).round() as u64,
                     state_updates = now.state_updates,

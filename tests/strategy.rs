@@ -739,7 +739,7 @@ async fn engine_qualifies_a_market_and_counts_it_once() {
         .unwrap();
 
     let state = rig.market(m).await;
-    assert_eq!(state.status, MarketStatus::Qualified);
+    assert_eq!(state.status, MarketStatus::Armed);
     let s = rig.metrics.snapshot();
     assert!(s.markets_evaluated > 0);
     assert_eq!(
@@ -762,7 +762,7 @@ async fn independent_markets_do_not_contaminate_each_other() {
     // `bad` gets an account update but no volume -> not qualified.
     rig.engine.route(account_event(bad, 901, 2)).await.unwrap();
 
-    assert_eq!(rig.market(good).await.status, MarketStatus::Qualified);
+    assert_eq!(rig.market(good).await.status, MarketStatus::Armed);
     assert_eq!(rig.market(bad).await.status, MarketStatus::Observing);
     rig.shutdown().await;
 }
@@ -776,7 +776,7 @@ async fn recovery_from_invalidation_requalifies() {
         .route(swap_event(m, 990, 1, 1_000_000_000))
         .await
         .unwrap();
-    assert_eq!(rig.market(m).await.status, MarketStatus::Qualified);
+    assert_eq!(rig.market(m).await.status, MarketStatus::Armed);
 
     // A genuine reserve-mutation transaction invalidates the market.
     let mut mutation = swap_event(m, 991, 2, 0);
@@ -789,7 +789,7 @@ async fn recovery_from_invalidation_requalifies() {
 
     // A fresh authoritative account update re-establishes Known and re-qualifies.
     rig.engine.route(account_event(m, 992, 3)).await.unwrap();
-    assert_eq!(rig.market(m).await.status, MarketStatus::Qualified);
+    assert_eq!(rig.market(m).await.status, MarketStatus::Armed);
     rig.shutdown().await;
 }
 
@@ -852,7 +852,7 @@ async fn engine_fresh_market_with_proven_creation_qualifies() {
         .route(swap_event(m, 990, 2, 1_000_000_000))
         .await
         .unwrap();
-    assert_eq!(rig.market(m).await.status, MarketStatus::Qualified);
+    assert_eq!(rig.market(m).await.status, MarketStatus::Armed);
     rig.shutdown().await;
 }
 
@@ -963,7 +963,7 @@ async fn pyth_mode_qualifies_with_fresh_reference() {
         .route(swap_event(m, 990, 1, 1_000_000_000))
         .await
         .unwrap();
-    assert_eq!(rig.market(m).await.status, MarketStatus::Qualified);
+    assert_eq!(rig.market(m).await.status, MarketStatus::Armed);
     assert!(rig.metrics.snapshot().markets_qualified >= 1);
     rig.shutdown().await;
 }
@@ -978,7 +978,7 @@ async fn static_mode_still_works_when_explicitly_selected() {
         .route(swap_event(m, 990, 1, 1_000_000_000))
         .await
         .unwrap();
-    assert_eq!(rig.market(m).await.status, MarketStatus::Qualified);
+    assert_eq!(rig.market(m).await.status, MarketStatus::Armed);
     assert_eq!(
         rig.engine.sol_usd().snapshot().0,
         0,

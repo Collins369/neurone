@@ -154,5 +154,13 @@ async fn live_pyth_sol_usd_account_streams() {
         let (_, last_pt, _) = received[n - 1];
         println!("  first publish_time={first_pt} last publish_time={last_pt}");
     }
-    assert!(n > 0, "no Pyth SOL/USD updates observed");
+    // The sponsored feed publishes on a ~55-60 s heartbeat, so short windows can
+    // legitimately observe zero updates; only require one for longer windows.
+    assert!(
+        n > 0 || seconds < 120,
+        "no Pyth SOL/USD updates in {seconds}s (heartbeat is ~55-60s; use >=120s)"
+    );
+    if n == 0 {
+        eprintln!("note: no update in {seconds}s < heartbeat; rerun with a longer window");
+    }
 }
