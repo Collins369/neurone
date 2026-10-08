@@ -51,6 +51,11 @@ fn account_event(k: MarketKey, wv: u64, slot: u64) -> NormalizedEvent {
     }))
 }
 
+/// A synthetic transaction carrying a *genuine* non-trade reserve mutation.
+///
+/// Exercises the retained invalidation path directly. This is intentionally
+/// **not** a fee sweep: sweeps are proven not to be reserve mutations and must
+/// not reach this path (see `protocol_fee_sweep_does_not_invalidate_*`).
 fn mutation_event(sig: u8, slot: u64, keys: Vec<MarketKey>) -> NormalizedEvent {
     let mut signature = [0u8; 64];
     signature[0] = sig;
@@ -64,7 +69,9 @@ fn mutation_event(sig: u8, slot: u64, keys: Vec<MarketKey>) -> NormalizedEvent {
         swaps: Vec::new(),
         creates: Vec::new(),
         decode_rejected: 0,
+        vault_balances: Vec::new(),
         has_reserve_mutation: true,
+        has_sweep: false,
     }))
 }
 
@@ -100,7 +107,9 @@ fn swap_event(market: MarketKey, slot: u64, sig: u8) -> NormalizedEvent {
         swaps: vec![swap],
         creates: Vec::new(),
         decode_rejected: 0,
+        vault_balances: Vec::new(),
         has_reserve_mutation: false,
+        has_sweep: false,
     }))
 }
 
@@ -143,9 +152,11 @@ impl Rig {
     }
 }
 
-/// 1 + 2: trade -> sweep -> (no fresh state) => invalidated and not quotable.
+/// 1 + 2: a genuine non-trade reserve mutation -> (no fresh state) =>
+/// invalidated and not quotable. (A fee sweep is *not* such a mutation; see
+/// `protocol_fee_sweep_does_not_invalidate_known_market`.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sweep_invalidates_state_and_blocks_quotes() {
+async fn reserve_mutation_invalidates_state_and_blocks_quotes() {
     let rig = start(8);
     let m = key(1);
     rig.engine.route(account_event(m, 1, 100)).await.unwrap();
@@ -294,60 +305,130 @@ async fn state_version_advances_and_market_can_rearm() {
     rig.shutdown().await;
 }
 
-/// 6/8: the normalizer detects the sweep from the deployed program's own Anchor
-/// logs (the evidence M3.2E recorded) and ignores unrelated transactions.
-#[test]
-fn normalizer_detects_sweep_instruction() {
+/// A pump.fun fee sweep built from the deployed program's own Anchor logs and
+/// normalised through the real ingestion boundary, keyed to `market`.
+fn sweep_transaction_event(
+    market: MarketKey,
+    slot: u64,
+    sig: u8,
+    creator: bool,
+) -> NormalizedEvent {
     use yellowstone_grpc_proto::prelude::{
         subscribe_update::UpdateOneof, SubscribeUpdate, SubscribeUpdateTransaction,
         SubscribeUpdateTransactionInfo,
     };
     use yellowstone_grpc_proto::solana::storage::confirmed_block::{Message, Transaction};
 
-    let build = |logs: Vec<String>| SubscribeUpdate {
+    let mut signature = vec![0u8; 64];
+    signature[0] = sig;
+    let line = if creator {
+        "Program log: Instruction: SweepCreatorFee"
+    } else {
+        "Program log: Instruction: SweepProtocolFee"
+    };
+    let update = SubscribeUpdate {
         update_oneof: Some(UpdateOneof::Transaction(SubscribeUpdateTransaction {
             transaction: Some(SubscribeUpdateTransactionInfo {
-                signature: vec![1u8; 64],
+                signature: signature.clone(),
                 is_vote: false,
                 transaction: Some(Transaction {
-                    signatures: vec![vec![1u8; 64]],
+                    signatures: vec![signature],
                     message: Some(Message {
-                        account_keys: vec![neurone::decode::pumpfun::PROGRAM_ID.to_vec()],
+                        account_keys: vec![market.as_bytes().to_vec()],
                         ..Default::default()
                     }),
                 }),
                 meta: Some(yellowstone_grpc_proto::prelude::TransactionStatusMeta {
-                    log_messages: logs,
+                    log_messages: vec![
+                        "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P invoke [1]".into(),
+                        line.into(),
+                    ],
                     ..Default::default()
                 }),
                 index: 0,
             }),
-            slot: 1,
+            slot,
             ..Default::default()
         })),
         ..Default::default()
     };
-
-    assert!(has_mutation(&build(vec![
-        "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P invoke [1]".into(),
-        "Program log: Instruction: SweepProtocolFee".into(),
-    ])));
-    assert!(has_mutation(&build(vec![
-        "Program log: Instruction: SweepCreatorFee".into()
-    ])));
-    // A normal trade does not trip the mutation detector.
-    assert!(!has_mutation(&build(vec![
-        "Program log: Instruction: Buy".into(),
-        "Program data: bddb7fd34ee661ee".into(),
-    ])));
+    match neurone::events::normalize(&update, 0) {
+        neurone::events::Normalized::Event(e) => e,
+        other => panic!("expected event, got {other:?}"),
+    }
 }
 
-fn has_mutation(update: &yellowstone_grpc_proto::prelude::SubscribeUpdate) -> bool {
-    match neurone::events::normalize(update, 0) {
-        neurone::events::Normalized::Event(e) => match e.kind {
-            EventKind::Transaction(t) => t.has_reserve_mutation,
-            _ => false,
-        },
-        _ => false,
+fn classify(ev: &NormalizedEvent) -> (bool, bool) {
+    match &ev.kind {
+        EventKind::Transaction(t) => (t.has_sweep, t.has_reserve_mutation),
+        _ => panic!("expected transaction"),
     }
+}
+
+/// A fee sweep is observed (`has_sweep`) but is **not** a reserve mutation; a
+/// normal trade trips neither. (The M3.3 on-chain proof: sweeps only move fees.)
+#[test]
+fn normalizer_classifies_sweep_as_observability_not_mutation() {
+    let (has_sweep, has_mutation) = classify(&sweep_transaction_event(key(12), 1, 1, false));
+    assert!(has_sweep, "protocol sweep must be observed");
+    assert!(!has_mutation, "a sweep is not a reserve mutation");
+
+    let (has_sweep, has_mutation) = classify(&sweep_transaction_event(key(13), 1, 2, true));
+    assert!(has_sweep, "creator sweep must be observed");
+    assert!(!has_mutation, "a sweep is not a reserve mutation");
+}
+
+/// A protocol-fee sweep must NOT invalidate a KNOWN market: it is a fee
+/// transfer, so the state stays `Known` and quotable and no invalidation is
+/// counted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn protocol_fee_sweep_does_not_invalidate_known_market() {
+    let rig = start(8);
+    let m = key(10);
+    rig.engine.route(account_event(m, 1, 100)).await.unwrap();
+    assert_eq!(
+        rig.market(m).await.reserve_state(100, 150),
+        ReserveState::Known
+    );
+
+    let ev = sweep_transaction_event(m, 200, 21, false);
+    assert_eq!(classify(&ev), (true, false));
+    rig.engine.route(ev).await.unwrap();
+
+    let state = rig.market(m).await;
+    assert_eq!(state.reserve_state(200, 150), ReserveState::Known);
+    assert!(state.invalidated_at_slot.is_none());
+    // The market is no longer blocked by invalidation (a sweep is not a mutation).
+    assert_ne!(
+        quote::quote(&state, Side::Sell, 1_000, 25, 200, 150),
+        Err(QuoteError::StateInvalidated)
+    );
+    assert_eq!(rig.metrics.snapshot().reserve_invalidations, 0);
+    rig.shutdown().await;
+}
+
+/// A creator-fee sweep must NOT invalidate a KNOWN market (same proof).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn creator_fee_sweep_does_not_invalidate_known_market() {
+    let rig = start(8);
+    let m = key(11);
+    rig.engine.route(account_event(m, 1, 100)).await.unwrap();
+    assert_eq!(
+        rig.market(m).await.reserve_state(100, 150),
+        ReserveState::Known
+    );
+
+    let ev = sweep_transaction_event(m, 200, 22, true);
+    assert_eq!(classify(&ev), (true, false));
+    rig.engine.route(ev).await.unwrap();
+
+    let state = rig.market(m).await;
+    assert_eq!(state.reserve_state(200, 150), ReserveState::Known);
+    assert!(state.invalidated_at_slot.is_none());
+    assert_ne!(
+        quote::quote(&state, Side::Sell, 1_000, 25, 200, 150),
+        Err(QuoteError::StateInvalidated)
+    );
+    assert_eq!(rig.metrics.snapshot().reserve_invalidations, 0);
+    rig.shutdown().await;
 }

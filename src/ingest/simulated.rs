@@ -120,7 +120,9 @@ impl SimulatedSource {
                 swaps: vec![swap],
                 creates: Vec::new(),
                 decode_rejected: 0,
+                vault_balances: Vec::new(),
                 has_reserve_mutation: false,
+                has_sweep: false,
             }))
         }
     }

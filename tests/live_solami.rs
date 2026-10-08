@@ -40,6 +40,7 @@ async fn live_authenticated_stream_decodes_markets() {
     // Keep the stream narrow and bounded.
     config.ingest.filters.account_programs.clear();
     config.ingest.filters.account_addresses.clear();
+    config.ingest.filters.extra_accounts.clear();
 
     let metrics = Metrics::new(
         config.runtime.shards,

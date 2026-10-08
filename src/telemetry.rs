@@ -89,6 +89,8 @@ pub struct Metrics {
     pub(crate) stale_events: AtomicU64,
     pub(crate) reserve_invalidations: AtomicU64,
     pub(crate) reserve_revalidations: AtomicU64,
+    pub(crate) vault_balance_updates: AtomicU64,
+    pub(crate) vault_balance_bootstraps: AtomicU64,
     pub(crate) swaps_pumpfun: AtomicU64,
     pub(crate) swaps_pumpswap: AtomicU64,
     pub(crate) invalid_events: AtomicU64,
@@ -117,6 +119,12 @@ pub struct MetricsSnapshot {
     pub stale_events: u64,
     pub reserve_invalidations: u64,
     pub reserve_revalidations: u64,
+    /// PumpSwap reserves established/updated from transaction
+    /// `post_token_balances` (the late-market bootstrap path).
+    pub vault_balance_updates: u64,
+    /// Subset of `vault_balance_updates` that took a market from `Unknown` to
+    /// `Known` (a true late-market bootstrap).
+    pub vault_balance_bootstraps: u64,
     pub swaps_pumpfun: u64,
     pub swaps_pumpswap: u64,
     pub invalid_events: u64,
@@ -166,6 +174,8 @@ impl Metrics {
             stale_events: AtomicU64::new(0),
             reserve_invalidations: AtomicU64::new(0),
             reserve_revalidations: AtomicU64::new(0),
+            vault_balance_updates: AtomicU64::new(0),
+            vault_balance_bootstraps: AtomicU64::new(0),
             swaps_pumpfun: AtomicU64::new(0),
             swaps_pumpswap: AtomicU64::new(0),
             invalid_events: AtomicU64::new(0),
@@ -231,6 +241,19 @@ impl Metrics {
     /// invalidation lifecycle observable end to end.
     pub fn incr_reserve_revalidation(&self) {
         self.reserve_revalidations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count a PumpSwap market whose reserves were established/updated from
+    /// transaction `post_token_balances` (late-market bootstrap).
+    pub fn incr_vault_balance_update(&self) {
+        self.vault_balance_updates.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count a PumpSwap market that went from `Unknown` to `Known` via
+    /// transaction `post_token_balances`.
+    pub fn incr_vault_balance_bootstrap(&self) {
+        self.vault_balance_bootstraps
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record the normalize+decode time for one update.
@@ -304,6 +327,8 @@ impl Metrics {
             stale_events: self.stale_events.load(Ordering::Relaxed),
             reserve_invalidations: self.reserve_invalidations.load(Ordering::Relaxed),
             reserve_revalidations: self.reserve_revalidations.load(Ordering::Relaxed),
+            vault_balance_updates: self.vault_balance_updates.load(Ordering::Relaxed),
+            vault_balance_bootstraps: self.vault_balance_bootstraps.load(Ordering::Relaxed),
             swaps_pumpfun: self.swaps_pumpfun.load(Ordering::Relaxed),
             swaps_pumpswap: self.swaps_pumpswap.load(Ordering::Relaxed),
             invalid_events: self.invalid_events.load(Ordering::Relaxed),
@@ -364,6 +389,8 @@ pub async fn report_loop(metrics: Arc<Metrics>, interval: Duration, shutdown: Sh
                     stale_events = now.stale_events,
                     reserve_invalidations = now.reserve_invalidations,
                     reserve_revalidations = now.reserve_revalidations,
+                    vault_balance_updates = now.vault_balance_updates,
+                    vault_balance_bootstraps = now.vault_balance_bootstraps,
                     events_per_second = (delta_events as f64 / secs).round() as u64,
                     state_updates = now.state_updates,
                     state_updates_per_second = (delta_updates as f64 / secs).round() as u64,

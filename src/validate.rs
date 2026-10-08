@@ -5,6 +5,15 @@
 //! result recorded in the same event. Reuses [`crate::ingest::solami`] and
 //! [`crate::quote`]; it does not route into shards (this is parity validation,
 //! not the trading path).
+//!
+//! **Validation-only semantics.** The classifications this harness produces
+//! (notably `previous_event_not_contiguous` and `QuoteError::UnsupportedState`)
+//! describe whether a *historical transition* can be proven from the observed
+//! predecessor. They are a property of this offline methodology, **not** a
+//! runtime market-eligibility gate: the sharded runtime
+//! (`crate::engine`/`crate::shard`/`crate::market`) never reads them, and a
+//! market discovered after launch is bootstrapped from the next authoritative
+//! Yellowstone state regardless of any missing predecessor.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -146,8 +155,9 @@ pub struct ValidationReport {
     pub curves_cached: usize,
     pub curve_corroborations: u64,
     pub curve_corroborated: u64,
-    /// Transactions carrying a pump.fun sweep (reserve mutation) instruction.
-    pub reserve_mutations_seen: u64,
+    /// Transactions carrying a pump.fun fee-sweep instruction (observability;
+    /// a sweep is a fee transfer, not a reserve mutation).
+    pub sweeps_seen: u64,
     /// Why the pre-state gate rejected a trade (reason -> count).
     pub unsupported_reasons: BTreeMap<&'static str, u64>,
 }
@@ -242,8 +252,8 @@ pub async fn run(config: &Config, seconds: u64) -> Result<ValidationReport> {
         let EventKind::Transaction(tx) = &event.kind else {
             continue;
         };
-        if tx.has_reserve_mutation {
-            report.reserve_mutations_seen += 1;
+        if tx.has_sweep {
+            report.sweeps_seen += 1;
         }
         for swap in &tx.swaps {
             report.swaps += 1;
@@ -422,11 +432,11 @@ pub async fn run_to_text(config: &Config, seconds: u64) -> Result<String> {
         q99 as f64 / 1000.0,
     );
     let mut out = format!(
-        "connected={} updates={} swaps={} reserve_mutations_seen={} curve_updates={} curve_startup={} curves_cached={} acct_corroborations={} acct_corroborated={}\n{}",
+        "connected={} updates={} swaps={} sweeps_seen={} curve_updates={} curve_startup={} curves_cached={} acct_corroborations={} acct_corroborated={}\n{}",
         report.connected,
         report.updates,
         report.swaps,
-        report.reserve_mutations_seen,
+        report.sweeps_seen,
         report.curve_updates,
         report.curve_startup_updates,
         report.curves_cached,

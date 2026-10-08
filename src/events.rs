@@ -28,6 +28,11 @@ pub const MAX_DECODED_EVENTS: usize = 16;
 /// pump.swap swap events are ~450-500 bytes, so this must comfortably exceed
 /// them; anything larger is treated as not-our-event.
 const MAX_PROGRAM_DATA_LEN: usize = 2_048;
+/// Upper bound on post-transaction token balances carried per transaction.
+const MAX_VAULT_BALANCES: usize = 64;
+/// Upper bound on transaction account keys considered when resolving a
+/// `TokenBalance::account_index` (defensive; a message is already size-bounded).
+const MAX_INDEXED_KEYS: usize = 256;
 const PROGRAM_DATA_PREFIX: &str = "Program data: ";
 
 /// Deterministic market identity.
@@ -168,6 +173,19 @@ pub struct AccountUpdate {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VaultBalance {
+    /// The token account (vault) pubkey.
+    pub account: MarketKey,
+    /// The token account's authority (its SPL `owner` field). For a PumpSwap
+    /// pool vault this is the pool account itself.
+    pub authority: MarketKey,
+    /// The SPL token mint held by the vault.
+    pub mint: MarketKey,
+    /// Raw post-transaction token amount (base units).
+    pub amount: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransactionUpdate {
     pub signature: [u8; SIGNATURE_LEN],
     pub slot: u64,
@@ -180,12 +198,31 @@ pub struct TransactionUpdate {
     pub swaps: Vec<DecodedSwap>,
     /// Markets created by this transaction.
     pub creates: Vec<CreatedMarket>,
+    /// Post-transaction SPL token balances for accounts the transaction wrote
+    /// (`TransactionStatusMeta::post_token_balances`), bounded and decoded at
+    /// the ingestion boundary. Used to establish a PumpSwap pool's current
+    /// vault balances (`base`, and `quote + virtual_quote_reserves`) without
+    /// waiting for a decoded swap.
+    pub vault_balances: Vec<VaultBalance>,
     /// Known event payloads that failed to decode (malformed/truncated).
     pub decode_rejected: u32,
-    /// A non-trade reserve mutation instruction was present in the transaction
-    /// (pump.fun `SweepProtocolFee` / `SweepCreatorFee`). The shard invalidates
-    /// the affected markets rather than continuing from stale state.
+    /// A non-trade instruction that *genuinely* mutates the price-producing
+    /// reserves was present (see [`detect_reserve_mutation`]); the shard then
+    /// invalidates the affected markets rather than continuing from stale state.
+    ///
+    /// No pump.fun instruction is currently classified: the M3.3 on-chain
+    /// investigation proved `SweepProtocolFee` / `SweepCreatorFee` only transfer
+    /// accrued fees and leave `virtual_quote_reserves` / `virtual_token_reserves`
+    /// unchanged, so they are *not* reserve mutations (they are reported via
+    /// [`Self::has_sweep`]). The invalidation path is retained for a future
+    /// genuine mutation.
     pub has_reserve_mutation: bool,
+    /// A pump.fun fee sweep (`SweepProtocolFee` / `SweepCreatorFee`) was present.
+    ///
+    /// Observability only: a sweep moves accrued fees and does **not** mutate
+    /// the virtual reserves, so it must never invalidate market state or be
+    /// treated as a reserve mutation.
+    pub has_sweep: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -301,7 +338,12 @@ fn normalize_transaction(
     keys.sort_unstable();
     keys.dedup();
 
+    // Sweeps are fee transfers, not reserve mutations (M3.3 on-chain proof), so
+    // they are deliberately excluded from `has_reserve_mutation` and reported
+    // separately as observability.
     let has_reserve_mutation = detect_reserve_mutation(info);
+    let has_sweep = detect_sweep(info);
+    let vault_balances = extract_vault_balances(info);
 
     Some(TransactionUpdate {
         signature,
@@ -312,22 +354,39 @@ fn normalize_transaction(
         keys,
         swaps,
         creates,
+        vault_balances,
         decode_rejected,
         has_reserve_mutation,
+        has_sweep,
     })
 }
 
-/// pump.fun fee-sweep detection.
+/// Detect a *genuine* non-trade reserve mutation.
 ///
-/// M3.2E confirmed from on-chain evidence that `SweepProtocolFee` /
-/// `SweepCreatorFee` adjust `virtual_quote_reserves` without a `TradeEvent`.
-/// The instruction discriminators are absent from the published public IDLs, so
-/// detection uses the deployed program's own Anchor logs
-/// (`Program log: Instruction: SweepProtocolFee`), the evidence M3.2E recorded,
-/// plus the pump-fees event it emits (`742b4dbd117a482b`).
+/// `SweepProtocolFee` / `SweepCreatorFee` were previously classified here, but
+/// the M3.3 on-chain investigation
+/// (`docs/M3_3_SWEEP_RESERVE_DECODING_REPORT.md`) proved they only transfer
+/// accrued fees: the curve's `virtual_quote_reserves` and `virtual_token_reserves`
+/// are byte-identical before and after a sweep. They are therefore no longer a
+/// reserve mutation and are reported via [`detect_sweep`] instead. No other
+/// instruction is currently known to mutate the reserves without a `TradeEvent`,
+/// so this returns `false`; the invalidation path it feeds is retained so a
+/// future genuine mutation can be wired in with one line.
 fn detect_reserve_mutation(
-    info: &yellowstone_grpc_proto::prelude::SubscribeUpdateTransactionInfo,
+    _info: &yellowstone_grpc_proto::prelude::SubscribeUpdateTransactionInfo,
 ) -> bool {
+    false
+}
+
+/// pump.fun fee-sweep detection (**observability only**).
+///
+/// `SweepProtocolFee` / `SweepCreatorFee` move accrued protocol/creator fees out
+/// of the bonding curve. They emit `SweepBondingCurveFeeEvent`
+/// (`742b4dbd117a482b`) and no `TradeEvent`, and they do **not** change the
+/// curve's `virtual_quote_reserves` / `virtual_token_reserves` (M3.3 proof).
+/// Detection uses the deployed program's own Anchor logs; the resulting signal
+/// is informational and must never invalidate market state.
+fn detect_sweep(info: &yellowstone_grpc_proto::prelude::SubscribeUpdateTransactionInfo) -> bool {
     let Some(meta) = info.meta.as_ref() else {
         return false;
     };
@@ -339,6 +398,85 @@ fn detect_reserve_mutation(
         }
     }
     false
+}
+
+/// Extract the SPL post-transaction token balances a transaction's metadata
+/// reports for the accounts it wrote.
+///
+/// Bounded, deterministic, allocation-light: at most [`MAX_VAULT_BALANCES`]
+/// resolved entries. A balance's `account_index` is mapped through the
+/// transaction's ordered account keys (static keys, then loaded writable, then
+/// loaded read-only) — the same index space Solana uses for token balances.
+///
+/// This is the Yellowstone-only source of a PumpSwap pool's raw vault balances:
+/// the balances are authoritative, delivered on the already-subscribed
+/// transaction stream, and never require RPC or a token-account subscription.
+fn extract_vault_balances(
+    info: &yellowstone_grpc_proto::prelude::SubscribeUpdateTransactionInfo,
+) -> Vec<VaultBalance> {
+    let Some(meta) = info.meta.as_ref() else {
+        return Vec::new();
+    };
+    if meta.post_token_balances.is_empty() {
+        return Vec::new();
+    }
+
+    // Ordered account keys for `account_index` resolution.
+    let mut ordered: Vec<MarketKey> = Vec::new();
+    if let Some(tx) = info.transaction.as_ref() {
+        if let Some(message) = tx.message.as_ref() {
+            for k in &message.account_keys {
+                if ordered.len() >= MAX_INDEXED_KEYS {
+                    break;
+                }
+                if let Some(k) = MarketKey::from_slice(k) {
+                    ordered.push(k);
+                }
+            }
+        }
+    }
+    for k in meta
+        .loaded_writable_addresses
+        .iter()
+        .chain(&meta.loaded_readonly_addresses)
+    {
+        if ordered.len() >= MAX_INDEXED_KEYS {
+            break;
+        }
+        if let Some(k) = MarketKey::from_slice(k) {
+            ordered.push(k);
+        }
+    }
+
+    let mut out = Vec::new();
+    for tb in &meta.post_token_balances {
+        if out.len() >= MAX_VAULT_BALANCES {
+            break;
+        }
+        let Some(account) = ordered.get(tb.account_index as usize).copied() else {
+            continue;
+        };
+        let (Some(authority), Some(mint)) = (
+            MarketKey::from_base58(&tb.owner),
+            MarketKey::from_base58(&tb.mint),
+        ) else {
+            continue;
+        };
+        let Some(amount) = tb
+            .ui_token_amount
+            .as_ref()
+            .and_then(|u| u.amount.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        out.push(VaultBalance {
+            account,
+            authority,
+            mint,
+            amount,
+        });
+    }
+    out
 }
 
 /// Decode protocol events from a transaction's program logs.

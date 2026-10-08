@@ -188,10 +188,13 @@ impl Shard {
                         // touch below) still records that the market was
                         // involved.
                         if t.success {
-                            // Non-trade reserve mutation (pump.fun fee sweep):
-                            // invalidate every market this transaction touched
-                            // so stale state cannot be quoted or executed
-                            // against.
+                            // Genuine non-trade reserve mutation: invalidate
+                            // every market this transaction touched so stale
+                            // state cannot be quoted or executed against. The
+                            // normalizer currently never sets this (pump.fun fee
+                            // sweeps are fee transfers, not reserve mutations),
+                            // but the fail-closed path is retained for a future
+                            // genuine mutation.
                             if t.has_reserve_mutation {
                                 for key in &keys {
                                     if let Some(market) = self.markets.get_mut(key) {
@@ -215,6 +218,34 @@ impl Shard {
                                 self.metrics.incr_volume_update();
                                 self.metrics.incr_swap(swap.venue);
                                 applied += 1;
+                            }
+                            // PumpSwap current-state bootstrap: compose a pool's
+                            // effective reserves from authoritative transaction
+                            // post-token balances (bounded; no RPC, no token
+                            // account subscription). Skipped for any market whose
+                            // decoded swap already established reserves in this
+                            // same transaction (the event is authoritative there).
+                            if !t.vault_balances.is_empty() {
+                                for key in &keys {
+                                    if t.swaps.iter().any(|s| s.market_key == *key) {
+                                        continue;
+                                    }
+                                    if let Some(market) = self.markets.get_mut(key) {
+                                        let was_known = market.reserves_known;
+                                        if market.apply_vault_balances(
+                                            &t.vault_balances,
+                                            t.slot,
+                                            t.signature,
+                                            now,
+                                        ) {
+                                            self.metrics.incr_vault_balance_update();
+                                            if !was_known {
+                                                self.metrics.incr_vault_balance_bootstrap();
+                                            }
+                                            applied += 1;
+                                        }
+                                    }
+                                }
                             }
                         }
                         // Transaction observation on every touched market.

@@ -12,3 +12,5 @@ block_meta = true
 transaction_programs = []
 account_programs = []
 account_addresses = []
+# Keep the probe narrow: no extra venue account subscriptions.
+extra_accounts = []

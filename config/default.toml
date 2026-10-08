@@ -50,6 +50,15 @@ account_programs = ["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"]
 account_memcmp_base58 = "4y6pru6YvC7"
 # Additional explicit account pubkeys to track as markets.
 account_addresses = []
+# Additional bounded account subscriptions (one account type each; never a
+# token-account firehose). The PumpSwap AMM `Pool` accounts are subscribed so a
+# pool discovered after launch is known — identity, mints, vault addresses and
+# signed virtual_quote_reserves — and can bootstrap its raw vault balances from
+# transaction postTokenBalances (no RPC, no swap required).
+# `hQrXeCntzbV` = base58 of the pump_amm Pool discriminator (f19a6d0411b16dbc).
+[[ingest.filters.extra_accounts]]
+programs = ["pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"]
+memcmp_base58 = "hQrXeCntzbV"
 
 [ingest.simulated]
 markets = 512

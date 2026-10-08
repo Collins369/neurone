@@ -97,6 +97,17 @@ pub struct IngestConfig {
     pub simulated: SimulatedConfig,
 }
 
+/// A bounded account subscription: stream accounts owned by `programs`,
+/// optionally narrowed by a single offset-0 discriminator (base58).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AccountFilterConfig {
+    /// Owner program IDs whose owned accounts are streamed.
+    pub programs: Vec<String>,
+    /// Optional base58 anchor discriminator matched at byte offset 0.
+    pub memcmp_base58: Option<String>,
+}
+
 /// Subscription filter configuration.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -116,6 +127,11 @@ pub struct FilterConfig {
     pub account_memcmp_base58: Option<String>,
     /// Optional `accounts_data_slice` length in bytes (bounds per-account data).
     pub account_data_slice_len: Option<u64>,
+    /// Additional bounded account subscriptions. Used to stream the PumpSwap
+    /// `Pool` accounts (owner = pump_amm + Pool discriminator) so a late pool
+    /// can bootstrap its vault balances from transaction `postTokenBalances`.
+    /// Each entry is one account type, never a token-account firehose.
+    pub extra_accounts: Vec<AccountFilterConfig>,
 }
 
 /// Offline generator settings (no live credential required).
@@ -196,7 +212,7 @@ impl Default for FilterConfig {
             block_meta: true,
             // Both venues are decoded in M2: the pump.fun bonding curve and the
             // pump.swap AMM.
-            transaction_programs: vec![pumpfun.clone(), pumpswap],
+            transaction_programs: vec![pumpfun.clone(), pumpswap.clone()],
             // Subscribe the pump.fun bonding-curve accounts so market state is
             // continuously maintained from an authoritative source and so an
             // invalidated (post-fee-sweep) market can be re-established by a
@@ -210,6 +226,15 @@ impl Default for FilterConfig {
                 bs58::encode(crate::decode::pumpfun::BONDING_CURVE_DISC).into_string(),
             ),
             account_data_slice_len: None,
+            // Subscribe the PumpSwap `Pool` accounts (owner = pump_amm + Pool
+            // discriminator) so a pool discovered after launch is known
+            // (identity, mints, vault addresses, virtual_quote_reserves) and can
+            // bootstrap its raw vault balances from transaction post-token
+            // balances. Bounded: one account type, no token-account firehose.
+            extra_accounts: vec![AccountFilterConfig {
+                programs: vec![pumpswap],
+                memcmp_base58: Some(bs58::encode(crate::decode::pump_amm::POOL_DISC).into_string()),
+            }],
         }
     }
 }
@@ -340,6 +365,13 @@ impl Config {
         if self.ingest.source == IngestSource::Solami {
             // Validate program/account pubkeys eagerly so the failure is
             // deterministic and happens before we open a socket.
+            let extra_programs: Vec<String> = self
+                .ingest
+                .filters
+                .extra_accounts
+                .iter()
+                .flat_map(|f| f.programs.iter().cloned())
+                .collect();
             for (label, list) in [
                 (
                     "transaction_program",
@@ -347,6 +379,7 @@ impl Config {
                 ),
                 ("account_program", &self.ingest.filters.account_programs),
                 ("account_address", &self.ingest.filters.account_addresses),
+                ("extra_account_program", &extra_programs),
             ] {
                 for p in list {
                     let decoded = bs58::decode(p)

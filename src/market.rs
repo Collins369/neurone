@@ -18,7 +18,7 @@
 use std::collections::VecDeque;
 
 use crate::decode::{CreatedMarket, DecodedAccount, DecodedSwap, Venue};
-use crate::events::{AccountUpdate, MarketKey, TransactionUpdate};
+use crate::events::{AccountUpdate, MarketKey, TransactionUpdate, VaultBalance};
 
 /// Default number of sparse per-slot volume buckets retained per market.
 pub const DEFAULT_VOLUME_BUCKETS: usize = 1024;
@@ -29,19 +29,29 @@ pub enum MarketStatus {
     Observing,
 }
 
-/// Freshness of a market's reserve state (infrastructure concept, not strategy).
+/// Freshness/trust of a market's reserve state (infrastructure concept, not
+/// strategy).
 ///
-/// `Unknown` — identity known, but no authoritative reserves observed yet.
-/// `Known`   — reserves observed within the configured slot tolerance.
-/// `Stale`   — reserves observed, but not recently enough to trust.
+/// The variants deliberately separate *transient bootstrap* from
+/// *untrustworthy* state, because a market observed after launch must not be
+/// treated as unusable merely for missing its history:
+///
+/// * `Unknown` — identity known, but no authoritative reserves observed yet.
+///   This is the **normal, expected** state of a market discovered after
+///   launch. It clears automatically as soon as the next authoritative
+///   Yellowstone update arrives (a bonding-curve account update or a decoded
+///   swap) and never requires observing the market's launch or earlier trades.
+///   It is not quotable, but it is a transient bootstrap, not a rejection.
+/// * `Known` — reserves observed within the configured slot tolerance.
+/// * `Stale` — reserves observed, but not recently enough to trust.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ReserveState {
     Unknown,
     Known,
     Stale,
-    /// A non-trade reserve mutation (e.g. a fee sweep) was observed and the
-    /// market state has not yet been re-established from a fresh authoritative
-    /// source. Never quotable.
+    /// A genuine non-trade reserve mutation was observed and the market state
+    /// has not yet been re-established from a fresh authoritative source. Never
+    /// quotable.
     Invalidated,
 }
 
@@ -470,6 +480,90 @@ impl MarketState {
         self.volume
             .record(self.last_slot, s.is_buy, s.quote_amount, s.base_amount);
         self.last_trade_slot = self.last_slot;
+        self.last_update_ns = now_ns;
+        true
+    }
+
+    /// Establish/refresh a PumpSwap pool's reserves from transaction
+    /// `post_token_balances` and the pool's `virtual_quote_reserves`.
+    ///
+    /// A pool's raw balances live in its two SPL token vaults, which the `Pool`
+    /// account does not restate. When a transaction's authoritative
+    /// post-balances include both of this pool's configured vaults — matched by
+    /// **exact vault pubkey** and **expected mint** — reserves become:
+    ///
+    /// ```text
+    /// base_reserve  = raw base vault balance
+    /// quote_reserve = raw quote vault balance + virtual_quote_reserves (i128)
+    /// ```
+    ///
+    /// This is the late-observation bootstrap: it does **not** require a decoded
+    /// swap, the pool's launch, or a predecessor chain. It never fabricates a
+    /// reserve: unless the pool metadata is known and both vault balances are
+    /// present, consistently matched, and the effective quote reserve is
+    /// non-negative, it leaves the market untouched (still `Unknown`). Older
+    /// transactions cannot overwrite newer reserve state.
+    ///
+    /// Returns `true` when reserves were established/updated.
+    pub fn apply_vault_balances(
+        &mut self,
+        balances: &[VaultBalance],
+        slot: u64,
+        signature: [u8; 64],
+        now_ns: u128,
+    ) -> bool {
+        // Only a PumpSwap pool carries the vault metadata + signed virtual
+        // quote reserve needed to compose effective reserves.
+        let (Some(base_vault), Some(quote_vault)) =
+            (self.pool_base_token_account, self.pool_quote_token_account)
+        else {
+            return false;
+        };
+        let (Some(base_mint), Some(quote_mint)) = (self.base_mint, self.quote_mint) else {
+            return false;
+        };
+
+        // Positive association: exact vault pubkey, expected mint, and the
+        // vault's authority must be this pool (so a balance from an unrelated
+        // account can never contaminate the pool).
+        let mut base_raw = None;
+        let mut quote_raw = None;
+        for b in balances {
+            if b.authority != self.key {
+                continue;
+            }
+            if b.account == base_vault && b.mint == base_mint {
+                base_raw = Some(b.amount);
+            } else if b.account == quote_vault && b.mint == quote_mint {
+                quote_raw = Some(b.amount);
+            }
+        }
+        let (Some(base_raw), Some(quote_raw)) = (base_raw, quote_raw) else {
+            return false;
+        };
+
+        // Effective quote reserve: raw balance + signed virtual reserve, exact
+        // integer arithmetic, no floats.
+        let Some(effective_quote) = (quote_raw as i128).checked_add(self.virtual_quote_reserve)
+        else {
+            return false;
+        };
+        if effective_quote < 0 {
+            return false;
+        }
+
+        // Never regress newer authoritative reserve state.
+        if self.reserves_known && slot < self.last_reserve_slot {
+            return false;
+        }
+
+        self.base_reserve = u128::from(base_raw);
+        self.quote_reserve = effective_quote as u128;
+        self.reserves_known = true;
+        self.last_reserve_slot = slot;
+        self.last_reserve_timestamp = None;
+        self.last_reserve_signature = Some(signature);
+        self.last_slot = self.last_slot.max(slot);
         self.last_update_ns = now_ns;
         true
     }

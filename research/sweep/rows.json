@@ -1,0 +1,808 @@
+[
+ {
+  "curve": "iGmCtY1oKkuqNuqJuWdT5gmKXbxX1gefggWevnKpiot",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454470096,
+  "sweep_slots": [
+   454473846
+  ],
+  "instrs": [
+   "SweepCreatorFee",
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   5051648,
+   1595258
+  ],
+  "swept_total": 6646906,
+  "pre_vq": 15675989931,
+  "actual_post_vq": 15675989931,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 0,
+  "protocol_fees": 0,
+  "sigs": [
+   "3iPZksnCG9YpmfinyrcgJVQdvNVZHtX9bWtHccKXrhuGTTP5AKbGbvUwwooqYPzdfBrnqQJCpkFfPcn9Zs8K85Fn"
+  ]
+ },
+ {
+  "curve": "5Uu76S7L6apFFh8rcJ2JSgu21N5yhSGDy2CkGf7GYUcQ",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454472828,
+  "sweep_slots": [
+   454473846
+  ],
+  "instrs": [
+   "SweepCreatorFee",
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   15663699,
+   4946432
+  ],
+  "swept_total": 20610131,
+  "pre_vq": 17087223489,
+  "actual_post_vq": 17087223489,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 0,
+  "protocol_fees": 0,
+  "sigs": [
+   "3iPZksnCG9YpmfinyrcgJVQdvNVZHtX9bWtHccKXrhuGTTP5AKbGbvUwwooqYPzdfBrnqQJCpkFfPcn9Zs8K85Fn"
+  ]
+ },
+ {
+  "curve": "5rGY9adK5pZ8DCHKxepneQPxWq7tDiFjnKYpz42zeJci",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454470940,
+  "sweep_slots": [
+   454473846
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   2121037
+  ],
+  "swept_total": 2121037,
+  "pre_vq": 27612420258,
+  "actual_post_vq": 27612420258,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 669802,
+  "protocol_fees": 0,
+  "sigs": [
+   "3iPZksnCG9YpmfinyrcgJVQdvNVZHtX9bWtHccKXrhuGTTP5AKbGbvUwwooqYPzdfBrnqQJCpkFfPcn9Zs8K85Fn"
+  ]
+ },
+ {
+  "curve": "7Hz8Jj9aV3JG5iCco4u8qx27aApDFRdKFnPEoJrMBuCn",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454471572,
+  "sweep_slots": [
+   454473846
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   1047538
+  ],
+  "swept_total": 1047538,
+  "pre_vq": 2006079803,
+  "actual_post_vq": 2006079803,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 330802,
+  "protocol_fees": 0,
+  "sigs": [
+   "3iPZksnCG9YpmfinyrcgJVQdvNVZHtX9bWtHccKXrhuGTTP5AKbGbvUwwooqYPzdfBrnqQJCpkFfPcn9Zs8K85Fn"
+  ]
+ },
+ {
+  "curve": "DyGjYwhrPWGNrcDcPhTnUTwKP9MSz76Ph7ZEH6HR8WuT",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454471152,
+  "sweep_slots": [
+   454473846
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   813069
+  ],
+  "swept_total": 813069,
+  "pre_vq": 14111499850,
+  "actual_post_vq": 14111499850,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 256759,
+  "protocol_fees": 0,
+  "sigs": [
+   "3iPZksnCG9YpmfinyrcgJVQdvNVZHtX9bWtHccKXrhuGTTP5AKbGbvUwwooqYPzdfBrnqQJCpkFfPcn9Zs8K85Fn"
+  ]
+ },
+ {
+  "curve": "Ev7ZUNfjD9BCyCHcNkJUCppabHsEm3bmrbwGhFL5EHKR",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454472796,
+  "sweep_slots": [
+   454473846
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   814427
+  ],
+  "swept_total": 814427,
+  "pre_vq": 166768380365,
+  "actual_post_vq": 166768380365,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 257188,
+  "protocol_fees": 0,
+  "sigs": [
+   "XyEG2Hh1YD5NwgLceH1C1JKsSPDBDzBJToFRXJN9UXCiWiExFbT27XFuYqAv1ioNTnSCG5N1bjq68PhRXW4wqcS"
+  ]
+ },
+ {
+  "curve": "2u8Z9f52TgA3n5NuXjT1zoRjgpzTRdECdp7PFHpLXbJ8",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454467760,
+  "sweep_slots": [
+   454470497
+  ],
+  "instrs": [
+   "SweepCreatorFee",
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   16442952,
+   5192512
+  ],
+  "swept_total": 21635464,
+  "pre_vq": 58332943861,
+  "actual_post_vq": 58332943861,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 0,
+  "protocol_fees": 0,
+  "sigs": [
+   "5Fheiw1TT1YVNLMcFjqnZ5HbQfMKgg3YToK1u2DUnMXz4E6CVYmDJNLs1TpG5Y72NNyyL92voDxkhxtynKimfhqr"
+  ]
+ },
+ {
+  "curve": "2zvTXkVzTytteW1Z3EmkC5tskFYvPqSVJzjT5T9Zgo2L",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454469738,
+  "sweep_slots": [
+   454470497
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   1020353
+  ],
+  "swept_total": 1020353,
+  "pre_vq": 3564873415,
+  "actual_post_vq": 3564873415,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 322217,
+  "protocol_fees": 0,
+  "sigs": [
+   "5Fheiw1TT1YVNLMcFjqnZ5HbQfMKgg3YToK1u2DUnMXz4E6CVYmDJNLs1TpG5Y72NNyyL92voDxkhxtynKimfhqr"
+  ]
+ },
+ {
+  "curve": "5Sqv2inYK3n3UwYgzzfUzBvtqar6CpgwqXzHYwobEmeN",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454469140,
+  "sweep_slots": [
+   454470497
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   140645
+  ],
+  "swept_total": 140645,
+  "pre_vq": 31498410,
+  "actual_post_vq": 31498410,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 44414,
+  "protocol_fees": 0,
+  "sigs": [
+   "5Fheiw1TT1YVNLMcFjqnZ5HbQfMKgg3YToK1u2DUnMXz4E6CVYmDJNLs1TpG5Y72NNyyL92voDxkhxtynKimfhqr"
+  ]
+ },
+ {
+  "curve": "8JVsoCKA53SkJaWLk9TCuSjcayFhYm8mhj34D4ViLHPT",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454466943,
+  "sweep_slots": [
+   454470497
+  ],
+  "instrs": [
+   "SweepCreatorFee",
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   6608318,
+   2086838
+  ],
+  "swept_total": 8695156,
+  "pre_vq": 33998055938,
+  "actual_post_vq": 33998055938,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 0,
+  "protocol_fees": 0,
+  "sigs": [
+   "5Fheiw1TT1YVNLMcFjqnZ5HbQfMKgg3YToK1u2DUnMXz4E6CVYmDJNLs1TpG5Y72NNyyL92voDxkhxtynKimfhqr"
+  ]
+ },
+ {
+  "curve": "DRJt8p6ePWNRfNHteFfJyWFTDLEzxpUFnkWF199qKhdo",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454469148,
+  "sweep_slots": [
+   454470496
+  ],
+  "instrs": [
+   "SweepCreatorFee",
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   3306695,
+   1044221
+  ],
+  "swept_total": 4350916,
+  "pre_vq": 1217412235,
+  "actual_post_vq": 1217412235,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 0,
+  "protocol_fees": 0,
+  "sigs": [
+   "2o9KnY5kVffVoodKFjGEkuLge9kyn25spQSfLHNJnx4LR6VLd7PrJoK5tzFD87sgVXira4oCBigpaLz2h2QuHq55"
+  ]
+ },
+ {
+  "curve": "GsJWhrZmUpLn5iSv7w99v9PyF1sNxhhmAhUjZwTFVbFC",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454468880,
+  "sweep_slots": [
+   454470496
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   2099462
+  ],
+  "swept_total": 2099462,
+  "pre_vq": 198664412702,
+  "actual_post_vq": 198664412702,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 662988,
+  "protocol_fees": 0,
+  "sigs": [
+   "2o9KnY5kVffVoodKFjGEkuLge9kyn25spQSfLHNJnx4LR6VLd7PrJoK5tzFD87sgVXira4oCBigpaLz2h2QuHq55"
+  ]
+ },
+ {
+  "curve": "Az1zXovrVstTmjrnxUjkmvnkwRzaT7qyYSp8E4YCkJyr",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454465001,
+  "sweep_slots": [
+   454467184
+  ],
+  "instrs": [
+   "SweepCreatorFee",
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   6569145,
+   2074471
+  ],
+  "swept_total": 8643616,
+  "pre_vq": 2219770325,
+  "actual_post_vq": 2219770325,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 0,
+  "protocol_fees": 0,
+  "sigs": [
+   "5vm2pmAWBjFXfEJBgtcMmekBHLfb5h7KKfHeAxWWDgLLuFJmfKgwupjyGzvuNrZbnQhCGd3XNxCvHKydo8C5G3sr"
+  ]
+ },
+ {
+  "curve": "FxTKNh62s2KwjTjemRkRdx5rUeGoq3ZHAzCLWBhdBdL5",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454467089,
+  "sweep_slots": [
+   454467184
+  ],
+  "instrs": [
+   "SweepCreatorFee",
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   4775089,
+   1507926
+  ],
+  "swept_total": 6283015,
+  "pre_vq": 5618012006,
+  "actual_post_vq": 5618012006,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 0,
+  "protocol_fees": 0,
+  "sigs": [
+   "5vm2pmAWBjFXfEJBgtcMmekBHLfb5h7KKfHeAxWWDgLLuFJmfKgwupjyGzvuNrZbnQhCGd3XNxCvHKydo8C5G3sr"
+  ]
+ },
+ {
+  "curve": "GpWN7kodhn4qQU3KN6hWdDR24bjuqr8hfUkSHLMbRqk6",
+  "status": "ok",
+  "is_sol_pair": false,
+  "quote_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "last_trade_slot": 454467059,
+  "sweep_slots": [
+   454467184
+  ],
+  "instrs": [
+   "SweepCreatorFee",
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   991221,
+   313020
+  ],
+  "swept_total": 1304241,
+  "pre_vq": 13652623,
+  "actual_post_vq": 13652623,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 0,
+  "protocol_fees": 0,
+  "sigs": [
+   "3LWtdQzmLYV2rUYbyEHW9YTKe8HpncpMe2eivvtSEgALDfKQC7N82iaYKzThBgL4QxVGQ2dyRbdtMqjFPEUqkEFr"
+  ]
+ },
+ {
+  "curve": "4uoSDzzdxpXayXZEAoqDRcaeoFz82wihsqPHLEhfckEt",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454466256,
+  "sweep_slots": [
+   454467183
+  ],
+  "instrs": [
+   "SweepCreatorFee",
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   6422745,
+   2028236
+  ],
+  "swept_total": 8450981,
+  "pre_vq": 41402720029,
+  "actual_post_vq": 41402720029,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 0,
+  "protocol_fees": 0,
+  "sigs": [
+   "4ZaVYvJEvDnTMFssYHWZno8SaKApnPf7jH6dMEo3NdgKwzZPcNcixaBjmNj1SapYH9t81e8aGiUPg9VDxsUNjwxz"
+  ]
+ },
+ {
+  "curve": "5tqEZ5vdSZbRCocB1UvvUQy6RzNR3FFT2LeaKp3hcRJi",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454465912,
+  "sweep_slots": [
+   454467183
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   128802
+  ],
+  "swept_total": 128802,
+  "pre_vq": 4932362890,
+  "actual_post_vq": 4932362890,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 40675,
+  "protocol_fees": 0,
+  "sigs": [
+   "4ZaVYvJEvDnTMFssYHWZno8SaKApnPf7jH6dMEo3NdgKwzZPcNcixaBjmNj1SapYH9t81e8aGiUPg9VDxsUNjwxz"
+  ]
+ },
+ {
+  "curve": "84iQxdRqEz1s5NMfgZW1nq1oWuznVg2Y11m8zTnTYJkc",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454465907,
+  "sweep_slots": [
+   454467183
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   796572
+  ],
+  "swept_total": 796572,
+  "pre_vq": 3461406122,
+  "actual_post_vq": 3461406122,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 251550,
+  "protocol_fees": 0,
+  "sigs": [
+   "4ZaVYvJEvDnTMFssYHWZno8SaKApnPf7jH6dMEo3NdgKwzZPcNcixaBjmNj1SapYH9t81e8aGiUPg9VDxsUNjwxz"
+  ]
+ },
+ {
+  "curve": "2LFD7MMgbpkUGvxgJ3KhSBuiNZnXUftVERMYrwPjjB9n",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454460938,
+  "sweep_slots": [
+   454463726
+  ],
+  "instrs": [
+   "SweepCreatorFee",
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   6908508,
+   2181635
+  ],
+  "swept_total": 9090143,
+  "pre_vq": 13111316258,
+  "actual_post_vq": 13111316258,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 0,
+  "protocol_fees": 0,
+  "sigs": [
+   "33kGWiuTA3AmxSrLfjS2BSLBRjBEWz9kxXHa9rbWk78hwbSTuSQdv3tR2ZQh4aHLrEfUaYsN25zWk1eCWcnPEqC1"
+  ]
+ },
+ {
+  "curve": "67RfpzohbXMiWUvbEpbTczipXvuLFD2pHRFf7Gj7otsD",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454460900,
+  "sweep_slots": [
+   454463726
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   1908187
+  ],
+  "swept_total": 1908187,
+  "pre_vq": 28918731304,
+  "actual_post_vq": 28918731304,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 602586,
+  "protocol_fees": 0,
+  "sigs": [
+   "33kGWiuTA3AmxSrLfjS2BSLBRjBEWz9kxXHa9rbWk78hwbSTuSQdv3tR2ZQh4aHLrEfUaYsN25zWk1eCWcnPEqC1"
+  ]
+ },
+ {
+  "curve": "7hKprt8AQqaFwHMGVrarR9C9r4QzznJysJV24gH5SsVN",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454460076,
+  "sweep_slots": [
+   454463726
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   2380567
+  ],
+  "swept_total": 2380567,
+  "pre_vq": 17718667059,
+  "actual_post_vq": 17718667059,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 751758,
+  "protocol_fees": 0,
+  "sigs": [
+   "33kGWiuTA3AmxSrLfjS2BSLBRjBEWz9kxXHa9rbWk78hwbSTuSQdv3tR2ZQh4aHLrEfUaYsN25zWk1eCWcnPEqC1"
+  ]
+ },
+ {
+  "curve": "BDyCYPABM84xEmWUdwkHhsMFQw1kiSWRayjHrHJPNekS",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454462924,
+  "sweep_slots": [
+   454463726
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   1471118
+  ],
+  "swept_total": 1471118,
+  "pre_vq": 73427186713,
+  "actual_post_vq": 73427186713,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 0,
+  "protocol_fees": 0,
+  "sigs": [
+   "33kGWiuTA3AmxSrLfjS2BSLBRjBEWz9kxXHa9rbWk78hwbSTuSQdv3tR2ZQh4aHLrEfUaYsN25zWk1eCWcnPEqC1"
+  ]
+ },
+ {
+  "curve": "EsscVDTmZqRyQYJzCaLATLpgjbLebUabRFnuRXESvfuw",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454461346,
+  "sweep_slots": [
+   454463726
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   1687457
+  ],
+  "swept_total": 1687457,
+  "pre_vq": 5690516925,
+  "actual_post_vq": 5690516925,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 532883,
+  "protocol_fees": 0,
+  "sigs": [
+   "33kGWiuTA3AmxSrLfjS2BSLBRjBEWz9kxXHa9rbWk78hwbSTuSQdv3tR2ZQh4aHLrEfUaYsN25zWk1eCWcnPEqC1"
+  ]
+ },
+ {
+  "curve": "4M69M6iX641kb2PspSGy1CsYTMoyWDKKC7ThLLJiULiX",
+  "status": "ok",
+  "is_sol_pair": false,
+  "quote_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "last_trade_slot": 454459532,
+  "sweep_slots": [
+   454460396
+  ],
+  "instrs": [
+   "SweepCreatorFee",
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   1219005,
+   384951
+  ],
+  "swept_total": 1603956,
+  "pre_vq": 805329562,
+  "actual_post_vq": 805329562,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 0,
+  "protocol_fees": 0,
+  "sigs": [
+   "NJWVktabavcKHSoMDsiCVBuwTqcKJkZac9VbAAcbijed5LzbQx1dRVUSpS33qzX3ajobtNh2XF1g4Ci1tmZSSUx"
+  ]
+ },
+ {
+  "curve": "C2MSGu8CudzhZjBY6N1L7B3F5KtiC7VE79SpNd9pDaaU",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454458805,
+  "sweep_slots": [
+   454460396
+  ],
+  "instrs": [
+   "SweepCreatorFee",
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   9337141,
+   2948574
+  ],
+  "swept_total": 12285715,
+  "pre_vq": 3542920968,
+  "actual_post_vq": 3542920968,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 0,
+  "protocol_fees": 0,
+  "sigs": [
+   "NJWVktabavcKHSoMDsiCVBuwTqcKJkZac9VbAAcbijed5LzbQx1dRVUSpS33qzX3ajobtNh2XF1g4Ci1tmZSSUx"
+  ]
+ },
+ {
+  "curve": "CgfdFfaGSGrfmbx5Jox8X5fJWXsady7jHZcr25QYpn4B",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454457161,
+  "sweep_slots": [
+   454460396
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   206200
+  ],
+  "swept_total": 206200,
+  "pre_vq": 3293136353,
+  "actual_post_vq": 3293136353,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 65116,
+  "protocol_fees": 0,
+  "sigs": [
+   "NJWVktabavcKHSoMDsiCVBuwTqcKJkZac9VbAAcbijed5LzbQx1dRVUSpS33qzX3ajobtNh2XF1g4Ci1tmZSSUx"
+  ]
+ },
+ {
+  "curve": "J4hVavVf8kwMqwknQciVSsgA9mryD8kNf8nhZ3BZsrDT",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454456840,
+  "sweep_slots": [
+   454457029
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   2305117
+  ],
+  "swept_total": 2305117,
+  "pre_vq": 1823603214,
+  "actual_post_vq": 1823603214,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 727932,
+  "protocol_fees": 0,
+  "sigs": [
+   "25oDDjWZWegf5dAP4X9MkAPjiJQxdftS9AtakHkrjFKx9z27qrTdtswjnaZGD5nVyW6eLKayirk8q4oMdhcRvkdt"
+  ]
+ },
+ {
+  "curve": "3uGWVwthyLa4dn4BC1X9fHG1qnKHcUQeiJTCpUr4i1wF",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454455326,
+  "sweep_slots": [
+   454457021
+  ],
+  "instrs": [
+   "SweepCreatorFee",
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   6258554,
+   1976388
+  ],
+  "swept_total": 8234942,
+  "pre_vq": 5974318579,
+  "actual_post_vq": 5974318579,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 0,
+  "protocol_fees": 0,
+  "sigs": [
+   "3JhW9Ch9JiYcHX14b4bzh67BnVUEzrHviraqhg1RpY7yiABYMLvGKxJ95LXfwu13zdDGGpepvAsr8wx7aPKG5KWT"
+  ]
+ },
+ {
+  "curve": "63HhNgWLe1oLAG8c5QcsD4wi7bVJicErcpvESPVAfqYw",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454456879,
+  "sweep_slots": [
+   454457021
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   1505008
+  ],
+  "swept_total": 1505008,
+  "pre_vq": 1621872980,
+  "actual_post_vq": 1621872980,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 475267,
+  "protocol_fees": 0,
+  "sigs": [
+   "3JhW9Ch9JiYcHX14b4bzh67BnVUEzrHviraqhg1RpY7yiABYMLvGKxJ95LXfwu13zdDGGpepvAsr8wx7aPKG5KWT"
+  ]
+ },
+ {
+  "curve": "CBHMfuJYmZZAQwcpifp91jjfxWVfBHkr6wKddpASM3EX",
+  "status": "ok",
+  "is_sol_pair": true,
+  "quote_mint": "11111111111111111111111111111111",
+  "last_trade_slot": 454453591,
+  "sweep_slots": [
+   454457021
+  ],
+  "instrs": [
+   "SweepProtocolFee"
+  ],
+  "amounts": [
+   1396412
+  ],
+  "swept_total": 1396412,
+  "pre_vq": 53908279130,
+  "actual_post_vq": 53908279130,
+  "zero": true,
+  "amount_hyp": false,
+  "creator_fee": 440973,
+  "protocol_fees": 0,
+  "sigs": [
+   "3JhW9Ch9JiYcHX14b4bzh67BnVUEzrHviraqhg1RpY7yiABYMLvGKxJ95LXfwu13zdDGGpepvAsr8wx7aPKG5KWT"
+  ]
+ }
+]

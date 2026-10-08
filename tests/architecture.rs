@@ -52,7 +52,9 @@ fn tx_event(k: MarketKey, sig_byte: u8, slot: u64) -> NormalizedEvent {
         swaps: Vec::new(),
         creates: Vec::new(),
         decode_rejected: 0,
+        vault_balances: Vec::new(),
         has_reserve_mutation: false,
+        has_sweep: false,
     }))
 }
 

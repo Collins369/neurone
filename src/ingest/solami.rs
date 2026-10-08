@@ -23,9 +23,9 @@ use futures::{Sink, SinkExt, Stream, StreamExt};
 use tokio::time::Instant;
 use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
 use yellowstone_grpc_proto::prelude::{
-    SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterBlocksMeta,
-    SubscribeRequestFilterSlots, SubscribeRequestFilterTransactions, SubscribeRequestPing,
-    SubscribeUpdate,
+    SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterAccountsFilter,
+    SubscribeRequestFilterBlocksMeta, SubscribeRequestFilterSlots,
+    SubscribeRequestFilterTransactions, SubscribeRequestPing, SubscribeUpdate,
 };
 use yellowstone_grpc_proto::tonic::Status;
 
@@ -336,6 +336,21 @@ fn install_crypto_provider() {
 /// Build the Yellowstone `SubscribeRequest` from configuration.
 ///
 /// Public so tests (and `neurone check`) can assert the exact filter shape.
+/// An offset-0 memcmp discriminator filter (base58), used to narrow an account
+/// subscription to a single account type.
+fn memcmp_disc_filter(base58: &str) -> SubscribeRequestFilterAccountsFilter {
+    use yellowstone_grpc_proto::prelude::subscribe_request_filter_accounts_filter::Filter;
+    use yellowstone_grpc_proto::prelude::subscribe_request_filter_accounts_filter_memcmp::Data;
+    SubscribeRequestFilterAccountsFilter {
+        filter: Some(Filter::Memcmp(
+            yellowstone_grpc_proto::prelude::SubscribeRequestFilterAccountsFilterMemcmp {
+                offset: 0,
+                data: Some(Data::Base58(base58.to_string())),
+            },
+        )),
+    }
+}
+
 pub fn build_subscribe_request(
     cfg: &IngestConfig,
     from_slot: Option<u64>,
@@ -346,26 +361,34 @@ pub fn build_subscribe_request(
         // pump.fun account type instead of every account owned by the program.
         let mut filters = Vec::new();
         if let Some(disc) = &cfg.filters.account_memcmp_base58 {
-            filters.push(
-                yellowstone_grpc_proto::prelude::SubscribeRequestFilterAccountsFilter {
-                    filter: Some(
-                        yellowstone_grpc_proto::prelude::subscribe_request_filter_accounts_filter::Filter::Memcmp(
-                            yellowstone_grpc_proto::prelude::SubscribeRequestFilterAccountsFilterMemcmp {
-                                offset: 0,
-                                data: Some(
-                                    yellowstone_grpc_proto::prelude::subscribe_request_filter_accounts_filter_memcmp::Data::Base58(disc.clone()),
-                                ),
-                            },
-                        ),
-                    ),
-                },
-            );
+            filters.push(memcmp_disc_filter(disc));
         }
         accounts.insert(
             "accounts".to_string(),
             SubscribeRequestFilterAccounts {
                 account: cfg.filters.account_addresses.clone(),
                 owner: cfg.filters.account_programs.clone(),
+                filters,
+                nonempty_txn_signature: None,
+                ..Default::default()
+            },
+        );
+    }
+    // Additional bounded account subscriptions (one account type each, e.g.
+    // PumpSwap `Pool` accounts). Never a token-account firehose.
+    for (i, extra) in cfg.filters.extra_accounts.iter().enumerate() {
+        if extra.programs.is_empty() {
+            continue;
+        }
+        let mut filters = Vec::new();
+        if let Some(disc) = &extra.memcmp_base58 {
+            filters.push(memcmp_disc_filter(disc));
+        }
+        accounts.insert(
+            format!("accounts_extra_{i}"),
+            SubscribeRequestFilterAccounts {
+                account: Vec::new(),
+                owner: extra.programs.clone(),
                 filters,
                 nonempty_txn_signature: None,
                 ..Default::default()
@@ -505,6 +528,43 @@ mod tests {
                 assert_eq!(m.data, Some(Data::Base58("4y6pru6YvC7".to_string())));
             }
             other => panic!("expected BondingCurve memcmp filter, got {other:?}"),
+        }
+    }
+
+    /// The default configuration also subscribes the PumpSwap `Pool` accounts
+    /// (owner = pump_amm + Pool discriminator) so a late pool can bootstrap its
+    /// vault balances from transaction `postTokenBalances`. It stays bounded:
+    /// two account filters (curves + pools), never a token-account firehose.
+    #[test]
+    fn default_subscription_targets_pump_swap_pools() {
+        use yellowstone_grpc_proto::prelude::subscribe_request_filter_accounts_filter::Filter;
+        use yellowstone_grpc_proto::prelude::subscribe_request_filter_accounts_filter_memcmp::Data;
+
+        let c = IngestConfig::default();
+        let req = build_subscribe_request(&c, None).unwrap();
+        assert_eq!(req.accounts.len(), 2, "curves + pools, nothing else");
+        let acct = req
+            .accounts
+            .get("accounts_extra_0")
+            .expect("pump_amm Pool account filter");
+        assert!(acct
+            .owner
+            .contains(&"pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".to_string()));
+        match acct.filters.first().and_then(|f| f.filter.as_ref()) {
+            Some(Filter::Memcmp(m)) => {
+                assert_eq!(m.offset, 0);
+                assert_eq!(m.data, Some(Data::Base58("hQrXeCntzbV".to_string())));
+            }
+            other => panic!("expected Pool memcmp filter, got {other:?}"),
+        }
+        // No account filter may target a token program (no token firehose).
+        for f in req.accounts.values() {
+            for owner in &f.owner {
+                assert!(
+                    !owner.contains("Token"),
+                    "unexpected token-program account subscription: {owner}"
+                );
+            }
         }
     }
 

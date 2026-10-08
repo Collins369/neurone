@@ -110,7 +110,9 @@ fn tx_event(
         swaps,
         creates,
         decode_rejected: 0,
+        vault_balances: Vec::new(),
         has_reserve_mutation,
+        has_sweep: false,
     }))
 }
 
